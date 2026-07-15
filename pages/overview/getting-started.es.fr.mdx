@@ -1,0 +1,65 @@
+import { DimmedText } from '../../components/DimmedText';
+import { Steps } from 'nextra/components';
+
+# Primeros pasos
+
+## Como Autor del Código
+
+<Steps>
+### `Opcional` Instala el bot
+
+<DimmedText>El [bot de Opire](/es/overview/install-bot) permite a cualquier usuario usar los comandos de Opire en los repositorios donde esté instalada, pudiendo interactuar con la plataforma de Opire sin tener que salir de tu repositorio de GitHub.</DimmedText>
+<br/><br/>
+<DimmedText>Aunque sea opcional (dado que se pueden crear recompensas desde la plataforma web), recomendamos el uso del bot para ofrecer una mejor experiencia integradose directamente con los proyectos.</DimmedText>
+<br/><br/>
+<DimmedText>Te recomendamos que notifiques a tu comunidad de que estás usando Opire para que ellos mismos puedan crear las recompensas o estar atentos para resolver las issues. Para ello, puedes modificar el `README.md` de los repositorios, comunicarlo en el foro de la comunidad, avisar en Discord, etc.</DimmedText>
+
+### Crea tu primera recompensa (o dejar que otros la creen por ti) 
+
+<DimmedText>Si vas a crear recompensas en tus propios repositorios, revisa la sección ["Como Creador de Recompensas"](/es/overview/getting-started#como-creador-de-recompensas).</DimmedText>
+</Steps>
+
+## Como Creador de Recompensas
+
+<Steps>
+### Crea tu primera recompensa
+
+<DimmedText>Con Opire **cualquiera puede crear recompensas** en **cualquier repositorio** (tenga o no instalado el bot de Opire). En los proyectos que tengan instalado el bot, se podrá hacer uso de [nuestros comandos](/es/overview/commands#crear-recompensa). Si no tiene nuestro bot installado, podrás crear las recompensas directamente desde tu dashboard en [nuestra plataforma](https://app.opire.dev/dashboard/creator/rewards).</DimmedText>
+<br/><br/>
+<DimmedText>Se pueden empezar a ofrecer recompensas [desde $20](/es/rewards/pricing#precio-mínimo-y-costes). Además de añadir recompensas a las issues, cualquiera puede agradecer el esfuerzo de algún usuario con propinas [desde $1](/es/tips/pricing#precio-mínimo-y-costes).</DimmedText>
+<br/><br/>
+<DimmedText>Una issue puede tener asociadas [múltiples recompensas](/es/rewards/lifecycle#múltiples-recompensas), sin importar si es un mismo usuario el que las crea o son varios los que aportan diferentes cantidades: **a la hora del pago, cada usuario será responsable de pagar su parte**.</DimmedText>
+<br/><br/>
+
+### Paga cuando alguien reclame tus recompensas asociadas a la issue
+
+<DimmedText>Una vez el programador haya reclamado las recompensas de la issue y se revise que el cambio propuesto cumple con lo esperado, podrás pagar las recompensas que hayas creado para esa issue desde [tu dashboard](https://app.opire.dev/dashboard/creator/rewards). En caso de que haya varios programadores que hayan reclamado la misma issue, podrás elegir a cuál pagarle. Es **responsabilidad del desarrollador asegurarse de que tiene correctamente configurada su cuenta** para poder recibir pagos.</DimmedText>
+<br/><br/>
+<DimmedText>Es en este momento donde se realizará la transferencia de la recompensa junto al cobro de los [costes asociados](/es/rewards/pricing#precio-mínimo-y-costes).</DimmedText>
+<br/><br/>
+<DimmedText>Si [varias personas crean recompensas para la misma issue](/es/rewards/lifecycle#múltiples-creadores), cada creador pagará la suma de las recompensas que haya creado.</DimmedText>
+</Steps>
+
+## Como Desarrollador
+
+<Steps>
+
+### Configura tu cuenta de Stripe
+
+<DimmedText>Para poder recibir pagos a través de Opire, es necesario que termines de configurar la plataforma de pagos en [tus ajustes](https://app.opire.dev/settings). En caso de no hacerlo, los creadores de las recompensas no podrán recompensarte por tu gran esfuerzo.</DimmedText>
+
+### Busca una issue con recompensas e intenta resolverla
+
+<DimmedText>[En nuestra plataforma](https://app.opire.dev) podrás buscar entre todas las recompensas disponibles según el tipo de tecnología, precio, etc. Cuando hayas encontrado una issue que creas que puedes resolver, [inténtalo](/es/overview/commands#intentar-resolver-la-issue) para hacerle saber al mundo que pretendes reclamar las recompensas asociadas cuando la resuelvas.</DimmedText>
+<br/><br/>
+<DimmedText>Es posible que algunas de las recompensas creadas estén en proyectos en los que no se pueden usar nuestros comandos. En esos casos, tendrás que reclamarlas desde tu dashboard en [nuestra plataforma](https://app.opire.dev/dashboard/programmer/rewards).</DimmedText>
+
+### Crea una PR y reclama la reward
+
+<DimmedText>Una vez tengas la solución a la issue, crea una PR y utiliza [nuestros comandos](/es/overview/commands#reclamar-las-recompensas-asociadas-a-una-issue) (o [nuestra plataforma](https://app.opire.dev/dashboard/programmer/rewards)) para reclamar las recompensas asociadas.</DimmedText>
+<br/><br/>
+<DimmedText>Ten en cuenta que esto no significa que se te vaya a pagar automáticamente. Los creadores de las recompensas te pagarán cuando comprueben que tu solución cumple con los requisitos definidos en la issue.</DimmedText>
+<br/><br/>
+<DimmedText>Dado que una misma issue puede tener asociadas múltiples recompensas de diferentes creadores, cada uno de ellos pagará su parte por separado (pudiendo hacerlo en momentos diferentes). En [tu dashboard](https://app.opire.dev/dashboard/programmer/rewards) podrás ver en todo momento la cantidad pendiente por recibir para las rewards que hayas reclamado.</DimmedText>
+
+</Steps>
