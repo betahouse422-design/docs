@@ -11,3 +11,9 @@ build:
 
 node:
 	docker compose run --rm $(SERVICE_NAME) $(cmd)
+
+test:
+	docker compose run --rm $(SERVICE_NAME) npm test
+
+test-coverage:
+	docker compose run --rm $(SERVICE_NAME) npm test -- --coverage
