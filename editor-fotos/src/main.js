@@ -1045,7 +1045,8 @@ function openExportDialog() {
   const scale = Math.min(1, engine.maxRender / Math.max(g.cw, g.ch));
   $('#expInfo').textContent = `Tamaño: ${Math.round(g.cw * scale)} × ${Math.round(g.ch * scale)} px`;
   $('#expQualityRow').hidden = $('#expType').value === 'image/png';
-  openWatermarkOptions().then(() => dlg.showModal());
+  dlg.showModal();
+  openWatermarkOptions().catch(() => { /* sin marca de agua si falla el almacenamiento */ });
 }
 
 // Marca de agua: usa el logo de un restaurante ya configurado en Imprimir.
