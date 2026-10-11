@@ -18,6 +18,9 @@ export const HSL_LABELS = {
 };
 
 export const CURVE_CHANNELS = ['master', 'r', 'g', 'b'];
+// Curvas por tono: x = tono (0..1 = 0..360°), y = 0.5 es "sin cambio".
+export const HSL_CURVES = ['hue', 'sat', 'lum'];
+export const flatCurve = () => [[0, 0.5], [1, 0.5]];
 
 export const MAX_MASKS = 4;
 export const MAX_SPOTS = 16;
@@ -32,6 +35,7 @@ export function defaultEdits() {
     light: { exposure: 0, brightness: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 },
     color: { temperature: 0, tint: 0, saturation: 0, vibrance: 0, hsl },
     curves: { master: identityCurve(), r: identityCurve(), g: identityCurve(), b: identityCurve() },
+    hslCurves: { hue: flatCurve(), sat: flatCurve(), lum: flatCurve() },
     grading: {
       shadows: { hue: 220, sat: 0 },
       mids: { hue: 40, sat: 0 },
@@ -123,6 +127,14 @@ export function curvesActive(edits) {
   return CURVE_CHANNELS.some((c) => !curveIsIdentity(edits.curves[c]));
 }
 
+function curveIsFlat(pts) {
+  return pts.every((p) => Math.abs(p[1] - 0.5) < 1e-6);
+}
+
+export function hslCurvesActive(edits) {
+  return HSL_CURVES.some((c) => !curveIsFlat(edits.hslCurves[c]));
+}
+
 export function hslActive(edits) {
   return HSL_RANGES.some((r) => {
     const v = edits.color.hsl[r];
@@ -150,7 +162,7 @@ export function isNeutral(edits) {
       if (getPath(edits, s.path) !== getPath(d, s.path)) return false;
     }
   }
-  return !curvesActive(edits) && !hslActive(edits) && !gradingActive(edits) &&
+  return !curvesActive(edits) && !hslCurvesActive(edits) && !hslActive(edits) && !gradingActive(edits) &&
     !geometryActive(edits) && edits.masks.length === 0 && (edits.spots || []).length === 0;
 }
 
@@ -170,6 +182,10 @@ export function migrate(raw) {
     const pts = raw.curves && raw.curves[c];
     out.curves[c] = Array.isArray(pts) && pts.length >= 2 ? sanitizeCurve(pts) : identityCurve();
   }
+  for (const c of HSL_CURVES) {
+    const pts = raw.hslCurves && raw.hslCurves[c];
+    out.hslCurves[c] = Array.isArray(pts) && pts.length >= 2 ? wrapCurve(sanitizeCurve(pts)) : flatCurve();
+  }
   return out;
 }
 
@@ -177,7 +193,7 @@ function mergeInto(base, src) {
   if (typeof base !== 'object' || base === null || Array.isArray(base)) return src === undefined ? base : src;
   const out = Array.isArray(base) ? base.slice() : { ...base };
   for (const k of Object.keys(base)) {
-    if (k === 'masks' || k === 'curves' || k === 'spots') continue;
+    if (k === 'masks' || k === 'curves' || k === 'hslCurves' || k === 'spots') continue;
     if (src && src[k] !== undefined) {
       out[k] = typeof base[k] === 'object' && base[k] !== null && !Array.isArray(base[k])
         ? mergeInto(base[k], src[k])
@@ -188,6 +204,9 @@ function mergeInto(base, src) {
 }
 
 const clamp01 = (x) => Math.min(1, Math.max(0, Number(x) || 0));
+
+// El tono es circular: 0° y 360° son el mismo color, así que los dos extremos valen lo mismo.
+function wrapCurve(pts) { pts[pts.length - 1][1] = pts[0][1]; return pts; }
 
 // Ordena, limpia duplicados y fija los extremos en x=0 y x=1.
 function sanitizeCurve(pts) {
@@ -280,6 +299,10 @@ export function applyPreset(current, preset, intensity = 1) {
   for (const c of CURVE_CHANNELS) {
     if (curveIsIdentity(p.curves[c]) || !curveIsIdentity(out.curves[c])) continue;
     out.curves[c] = p.curves[c].map(([x, y]) => [x, round(x + (y - x) * k, 5)]);
+  }
+  for (const c of HSL_CURVES) {
+    if (curveIsFlat(p.hslCurves[c]) || !curveIsFlat(out.hslCurves[c])) continue;
+    out.hslCurves[c] = p.hslCurves[c].map(([x, y]) => [x, round(0.5 + (y - 0.5) * k, 5)]);
   }
   return out;
 }

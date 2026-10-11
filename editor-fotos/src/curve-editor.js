@@ -5,7 +5,9 @@
 
 import { makeCurve, addPoint, movePoint, removePoint, nearestPoint } from './curves.js';
 
-const COLORS = { master: '#e8e8ee', r: '#ff5a5a', g: '#4cd964', b: '#5a8bff' };
+const COLORS = { master: '#e8e8ee', r: '#ff5a5a', g: '#4cd964', b: '#5a8bff', hue: '#e8e8ee', sat: '#e8e8ee', lum: '#e8e8ee' };
+// Curvas por tono: el eje x es el tono, el centro (0.5) significa "sin cambio" y los extremos son el mismo color.
+const HUE_CHANNELS = ['hue', 'sat', 'lum'];
 
 export class CurveEditor {
   // opts.onChange(channel, points, final)  final=true al soltar
@@ -27,6 +29,15 @@ export class CurveEditor {
   }
 
   setChannel(ch) { this.channel = ch; this.active = -1; this.draw(); }
+  get isHue() { return HUE_CHANNELS.includes(this.channel); }
+
+  // En curvas por tono, mover un extremo mueve también el otro (0° y 360° son el mismo color).
+  _wrapEnds() {
+    if (!this.isHue || this.points.length < 2) return;
+    const last = this.points.length - 1;
+    if (this.active === last) this.points[0][1] = this.points[last][1];
+    else this.points[last][1] = this.points[0][1];
+  }
   setPoints(points) { this.points = points.map((p) => p.slice()); this.draw(); }
 
   _pos(e) {
@@ -60,6 +71,7 @@ export class CurveEditor {
     if (!this.dragging) return;
     const [x, y] = this._pos(e);
     this.points = movePoint(this.points, this.active, x, y);
+    this._wrapEnds();
     this.onChange(this.channel, this.points, false);
     this.draw();
   }
@@ -93,8 +105,17 @@ export class CurveEditor {
       ctx.beginPath(); ctx.moveTo((i / 4) * w, 0); ctx.lineTo((i / 4) * w, h); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, (i / 4) * h); ctx.lineTo(w, (i / 4) * h); ctx.stroke();
     }
-    ctx.strokeStyle = 'rgba(255,255,255,.18)';
-    ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke();
+    if (this.isHue) {
+      // franja de colores a lo largo del eje x y línea central de "sin cambio"
+      const g = ctx.createLinearGradient(0, 0, w, 0);
+      for (let i = 0; i <= 12; i++) g.addColorStop(i / 12, `hsl(${i * 30} 70% 50%)`);
+      ctx.globalAlpha = 0.25; ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(255,255,255,.3)';
+      ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+    } else {
+      ctx.strokeStyle = 'rgba(255,255,255,.18)';
+      ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke();
+    }
     const color = COLORS[this.channel];
     const f = makeCurve(this.points);
     ctx.strokeStyle = color; ctx.lineWidth = 2 * dpr;

@@ -4,7 +4,7 @@ import { Engine } from './engine.js';
 import { EditStore } from './store.js';
 import {
   defaultEdits, SLIDER_GROUPS, HSL_RANGES, HSL_LABELS, getPath, applyPreset, STARTER_PRESETS,
-  newMask, MAX_MASKS, isNeutral, clone, CURVE_CHANNELS, migrate, newSpot, MAX_SPOTS,
+  newMask, MAX_MASKS, isNeutral, clone, CURVE_CHANNELS, HSL_CURVES, flatCurve, migrate, newSpot, MAX_SPOTS,
 } from './model.js';
 import {
   averagePatchLinear, grayWorldLinear, whiteBalanceFromLinear, autoToneFromHistogram, applyAutoTone, chooseSpotSource,
@@ -162,30 +162,39 @@ function buildGradingSection() {
 
 // ---------- pestaña Curvas ----------
 let curveEditor = null;
+const CURVE_NAMES = { master: 'RGB', r: 'Rojo', g: 'Verde', b: 'Azul', hue: 'Tono→Tono', sat: 'Tono→Sat.', lum: 'Tono→Lum.' };
+const isHueCurve = (ch) => HSL_CURVES.includes(ch);
+const curvePoints = (ch) => (isHueCurve(ch) ? store.get().hslCurves[ch] : store.get().curves[ch]);
+const resetCurve = (ch) => (isHueCurve(ch) ? flatCurve() : [[0, 0], [1, 1]]);
+
 function buildCurvesTab() {
   const root = $('#tabCurves');
   root.replaceChildren();
   const canvas = el('canvas', { id: 'curveCanvas' });
-  const names = { master: 'RGB', r: 'Rojo', g: 'Verde', b: 'Azul' };
   const bar = el('div', { class: 'chips' });
-  CURVE_CHANNELS.forEach((ch) => {
-    const b = el('button', { class: 'chip' + (ch === 'master' ? ' on' : ''), type: 'button', 'data-ch': ch }, names[ch]);
+  [...CURVE_CHANNELS, ...HSL_CURVES].forEach((ch) => {
+    const b = el('button', { class: 'chip' + (ch === 'master' ? ' on' : ''), type: 'button', 'data-ch': ch, title: isHueCurve(ch) ? 'Curva por tono: el eje horizontal es el color; el centro es "sin cambio"' : '' }, CURVE_NAMES[ch]);
     b.addEventListener('click', () => {
       bar.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === b));
       curveEditor.setChannel(ch);
-      curveEditor.setPoints(store.get().curves[ch]);
+      curveEditor.setPoints(curvePoints(ch));
+      hint.textContent = isHueCurve(ch) ? HUE_HINT : TONE_HINT;
     });
     bar.append(b);
   });
-  const reset = el('button', { class: 'btn small', type: 'button' }, 'Restablecer este canal');
+  const TONE_HINT = 'Toca para añadir un punto, arrástralo para moverlo y haz doble clic (o doble toque) en un punto para quitarlo.';
+  const HUE_HINT = 'El eje horizontal es el color (rojo → amarillo → verde → azul → magenta). Sube un punto para aumentar el efecto en ese color y bájalo para reducirlo; la línea central es "sin cambio".';
+  const hint = el('p', { class: 'hint' }, TONE_HINT);
+  const reset = el('button', { class: 'btn small', type: 'button' }, 'Restablecer esta curva');
   reset.addEventListener('click', () => {
-    store.update((e) => { e.curves[curveEditor.channel] = [[0, 0], [1, 1]]; });
-    store.commit(); curveEditor.setPoints(store.get().curves[curveEditor.channel]);
+    const ch = curveEditor.channel;
+    store.update((e) => { if (isHueCurve(ch)) e.hslCurves[ch] = resetCurve(ch); else e.curves[ch] = resetCurve(ch); });
+    store.commit(); curveEditor.setPoints(curvePoints(ch));
   });
-  root.append(bar, canvas, el('p', { class: 'hint' }, 'Toca para añadir un punto, arrástralo para moverlo y haz doble clic (o doble toque) en un punto para quitarlo.'), reset);
+  root.append(bar, canvas, hint, reset);
   curveEditor = new CurveEditor(canvas, {
     onChange: (ch, points, final) => {
-      store.update((e) => { e.curves[ch] = points.map((p) => p.slice()); });
+      store.update((e) => { const pts = points.map((p) => p.slice()); if (isHueCurve(ch)) e.hslCurves[ch] = pts; else e.curves[ch] = pts; });
       if (final) store.commit();
     },
   });
@@ -762,7 +771,7 @@ function setTab(name) {
   ui.tab = name;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
   document.querySelectorAll('#tabBody section').forEach((s) => { s.hidden = s.dataset.tab !== name; });
-  if (name === 'curves' && curveEditor) { curveEditor.setPoints(store.get().curves[curveEditor.channel]); curveEditor.draw(); }
+  if (name === 'curves' && curveEditor) { curveEditor.setPoints(curvePoints(curveEditor.channel)); curveEditor.draw(); }
   if (name === 'masks') { buildMasksTab(); }
   if (name !== 'geometry' && ui.cropMode) endCrop(false);
   if (name !== 'retouch') ui.spotTool = false;
@@ -826,7 +835,7 @@ function updateOverlayMode() {
 // ---------- sincronizar la interfaz con el estado ----------
 function syncControls() {
   for (const c of Object.values(controls)) c.refresh();
-  if (curveEditor) curveEditor.setPoints(store.get().curves[curveEditor.channel]);
+  if (curveEditor) curveEditor.setPoints(curvePoints(curveEditor.channel));
   if (ui.tab === 'masks') buildMasksTab();
   if (ui.tab === 'retouch') buildRetouchTab();
 }

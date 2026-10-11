@@ -11,7 +11,7 @@ import { VERT, DOWN_FRAG, BLUR_FRAG, MAIN_FRAG } from './shaders.js';
 import { buildLUT, LUT_SIZE } from './curves.js';
 import { strokesToAlpha } from './brush.js';
 import {
-  HSL_RANGES, CURVE_CHANNELS, defaultEdits, curvesActive, hslActive, gradingActive,
+  HSL_RANGES, CURVE_CHANNELS, HSL_CURVES, defaultEdits, curvesActive, hslCurvesActive, hslActive, gradingActive,
 } from './model.js';
 
 const BLUR_LONG_SIDE = 512;
@@ -152,7 +152,7 @@ export class Engine {
     const gl = this.gl;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, LUT_SIZE, 4, 0, gl.RGBA, gl.FLOAT, new Float32Array(LUT_SIZE * 4 * 4));
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, LUT_SIZE, 8, 0, gl.RGBA, gl.FLOAT, new Float32Array(LUT_SIZE * 8 * 4));
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -197,17 +197,21 @@ export class Engine {
   }
 
   _updateLut(edits) {
-    const key = JSON.stringify(edits.curves);
+    const key = JSON.stringify([edits.curves, edits.hslCurves]);
     if (key === this.lutKey) return;
     this.lutKey = key;
-    const data = new Float32Array(LUT_SIZE * 4 * 4);
+    const data = new Float32Array(LUT_SIZE * 8 * 4);
     CURVE_CHANNELS.forEach((ch, row) => {
       const lut = buildLUT(edits.curves[ch]);
       for (let i = 0; i < LUT_SIZE; i++) data[(row * LUT_SIZE + i) * 4] = lut[i];
     });
+    HSL_CURVES.forEach((ch, k) => { // filas 4..6: tono, saturación, luminosidad por tono
+      const lut = buildLUT(edits.hslCurves[ch]);
+      for (let i = 0; i < LUT_SIZE; i++) data[((4 + k) * LUT_SIZE + i) * 4] = lut[i];
+    });
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LUT_SIZE, 4, gl.RGBA, gl.FLOAT, data);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LUT_SIZE, 8, gl.RGBA, gl.FLOAT, data);
   }
 
   // ---------- geometría ----------
@@ -329,6 +333,7 @@ export class Engine {
     });
     gl.uniform3fv(P.u('u_hsl[0]'), hsl);
     gl.uniform1i(P.u('u_curvesOn'), curvesActive(e) ? 1 : 0);
+    gl.uniform1i(P.u('u_hslCurvesOn'), hslCurvesActive(e) ? 1 : 0);
 
     gl.uniform1i(P.u('u_gradOn'), gradingActive(e) ? 1 : 0);
     const G = e.grading;

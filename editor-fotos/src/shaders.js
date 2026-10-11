@@ -49,7 +49,7 @@ precision highp int;
 uniform sampler2D u_src;   // origen, lineal, con mipmaps
 uniform sampler2D u_blur;  // origen muy desenfocado (para claridad)
 uniform sampler2D u_brush; // pincel de máscaras: canal i = máscara activa i
-uniform sampler2D u_lut;   // 256x4: filas master, r, g, b (valor en .r)
+uniform sampler2D u_lut;   // 256x8: filas master, r, g, b, tono, sat, lum (valor en .r)
 
 // geometría
 uniform vec2 u_orientedSize; // tamaño del origen tras girar 90° (px)
@@ -76,6 +76,7 @@ uniform float u_fade, u_vignette, u_grain, u_grainSize, u_bloom, u_halation;
 uniform int u_hslOn;
 uniform vec3 u_hsl[8];
 uniform int u_curvesOn;
+uniform int u_hslCurvesOn;
 uniform int u_gradOn;
 uniform vec4 u_gradS, u_gradM, u_gradH; // hue(grados), sat(0..1), -, -
 uniform float u_balance;
@@ -137,7 +138,7 @@ float hash(vec2 p) {
 }
 
 float lutLookup(float row, float x) {
-  return texture(u_lut, vec2((clamp(x, 0.0, 1.0) * 255.0 + 0.5) / 256.0, (row + 0.5) / 4.0)).r;
+  return texture(u_lut, vec2((clamp(x, 0.0, 1.0) * 255.0 + 0.5) / 256.0, (row + 0.5) / 8.0)).r;
 }
 
 // ---------- geometría ----------
@@ -335,6 +336,19 @@ void main() {
     hsl.y = clamp(hsl.y * (1.0 + ds / 100.0 * sw), 0.0, 1.0);
     hsl.z = clamp(hsl.z + dl / 100.0 * 0.3 * sw * (1.0 - abs(2.0 * hsl.z - 1.0) * 0.5), 0.0, 1.0);
     d = hsl2rgb(hsl);
+  }
+
+  // curvas por tono: cambian tono, saturación o luminosidad según el color de cada píxel
+  if (u_hslCurvesOn == 1) {
+    vec3 hc = rgb2hsl(clamp(d, 0.0, 1.0));
+    float cw = smoothstep(0.02, 0.2, hc.y); // los grises no tienen tono: no se tocan
+    float dHue = (lutLookup(4.0, hc.x) - 0.5) * 2.0;
+    float dSat = (lutLookup(5.0, hc.x) - 0.5) * 2.0;
+    float dLum = (lutLookup(6.0, hc.x) - 0.5) * 2.0;
+    hc.x = fract(hc.x + dHue * (60.0 / 360.0) * cw + 1.0);
+    hc.y = clamp(hc.y * (1.0 + dSat * cw), 0.0, 1.0);
+    hc.z = clamp(hc.z + dLum * 0.3 * cw * (1.0 - abs(2.0 * hc.z - 1.0) * 0.5), 0.0, 1.0);
+    d = hsl2rgb(hc);
   }
 
   if (u_sat != 0.0) {

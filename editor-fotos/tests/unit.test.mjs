@@ -1000,3 +1000,22 @@ test('máscara de pincel: se crea, sobrevive a migrate y no mezcla campos de otr
   assert.equal(migrate({ masks: [{ type: 'raro' }] }).masks[0].type, 'radial');
   assert.equal(isNeutral(e), false);
 });
+
+test('curvas por tono: por defecto planas, neutralidad, migración y extremos unidos', () => {
+  const d = defaultEdits();
+  assert.deepEqual(d.hslCurves.hue, [[0, 0.5], [1, 0.5]]);
+  const e = defaultEdits(); e.hslCurves.sat = [[0, 0.5], [0.5, 0.9], [1, 0.5]];
+  assert.equal(isNeutral(e), false);
+  const m = migrate({ hslCurves: { hue: [[0, 0.8], [0.4, 0.5], [1, 0.2]], sat: 'no', lum: [[0.2, 0.9]] } });
+  assert.equal(m.hslCurves.hue[0][1], m.hslCurves.hue[m.hslCurves.hue.length - 1][1], 'los extremos valen lo mismo');
+  assert.deepEqual(m.hslCurves.sat, [[0, 0.5], [1, 0.5]]);
+  assert.deepEqual(m.hslCurves.lum, [[0, 0.5], [1, 0.5]]);
+  assert.deepEqual(migrate({}).hslCurves, defaultEdits().hslCurves); // fotos guardadas antes de existir
+});
+
+test('un preset con curva por tono se mezcla con la intensidad', () => {
+  const p = defaultEdits(); p.hslCurves.sat = [[0, 0.5], [0.5, 1], [1, 0.5]];
+  const out = applyPreset(defaultEdits(), p, 0.5);
+  assert.ok(Math.abs(out.hslCurves.sat[1][1] - 0.75) < 1e-6);
+  assert.deepEqual(applyPreset(defaultEdits(), p, 0).hslCurves.sat, [[0, 0.5], [1, 0.5]]);
+});

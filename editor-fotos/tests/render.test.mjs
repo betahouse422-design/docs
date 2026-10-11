@@ -510,6 +510,35 @@ t('pincel: solo cambia lo pintado; la goma lo quita', async () => {
   assert.ok(r.inv.outside > 180 && Math.abs(r.inv.inside - 128) < 4, `invertir: dentro ${r.inv.inside}, fuera ${r.inv.outside}`);
 });
 
+t('curvas por tono: bajar la saturación solo en el azul, mover el rojo hacia naranja y aclarar el verde', async () => {
+  const r = await run(() => {
+    __h.load(128, 128, 'colors'); // rojo | azul | piel | verde
+    const base = (() => { __h.render(__h.edits()); return [__h.px(0.1, 0.5), __h.px(0.35, 0.5), __h.px(0.9, 0.5)]; })();
+    const e = __h.edits(); e.hslCurves.sat = [[0, 0.5], [0.55, 0.5], [0.667, 0], [0.78, 0.5], [1, 0.5]];
+    __h.render(e); const sat = [__h.px(0.1, 0.5), __h.px(0.35, 0.5), __h.px(0.9, 0.5)];
+    const h = __h.edits(); h.hslCurves.hue = [[0, 0.8], [0.12, 0.5], [0.88, 0.5], [1, 0.8]];
+    __h.render(h); const hue = __h.px(0.1, 0.5);
+    const l = __h.edits(); l.hslCurves.lum = [[0, 0.5], [0.25, 0.5], [0.33, 1], [0.42, 0.5], [1, 0.5]];
+    __h.render(l); const lum = [__h.px(0.9, 0.5), __h.px(0.1, 0.5)];
+    return { base, sat, hue, lum };
+  });
+  const spread = (p) => Math.max(...p) - Math.min(...p);
+  assert.ok(spread(r.sat[1]) < spread(r.base[1]) * 0.35, `el azul debe quedar casi gris (${spread(r.sat[1])} vs ${spread(r.base[1])})`);
+  near(spread(r.sat[0]), spread(r.base[0]), 4, 'el rojo no cambia'); near(spread(r.sat[2]), spread(r.base[2]), 4, 'el verde no cambia');
+  assert.ok(r.hue[1] > r.base[0][1] + 25, `el rojo debe virar a naranja (verde ${r.hue[1]} vs ${r.base[0][1]})`);
+  assert.ok(r.lum[0].reduce((a, b) => a + b) > r.base[2].reduce((a, b) => a + b) + 40, 'el verde se aclara');
+  near(r.lum[1].reduce((a, b) => a + b), r.base[0].reduce((a, b) => a + b), 6, 'el rojo no se aclara');
+});
+
+t('curvas por tono: los grises no se tocan aunque la curva sea extrema', async () => {
+  const r = await run(() => {
+    __h.load(64, 64, 'gray');
+    const e = __h.edits(); e.hslCurves.hue = [[0, 1], [0.5, 0], [1, 1]]; e.hslCurves.sat = [[0, 1], [0.5, 1], [1, 1]]; e.hslCurves.lum = [[0, 1], [0.5, 1], [1, 1]];
+    __h.render(e); return __h.px(0.5, 0.5);
+  });
+  r.forEach((v) => near(v, 128, 3, 'gris'));
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok   ${name}`); }
   catch (e) { console.log(`  FALLA ${name}\n        ${e.message.split('\n')[0]}`); process.exitCode = 1; }

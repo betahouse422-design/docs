@@ -149,6 +149,30 @@ t('curvas: arrastrar crea un punto, se refleja en las ediciones y oscurece', asy
   await ctx.close();
 });
 
+t('curvas por tono: Tono→Sat. se edita, los extremos se mueven juntos y se puede restablecer', async () => {
+  const { page, ctx } = await newPage({ width: 1280, height: 800 });
+  await openSample(page);
+  await page.click('#tabs button[data-tab="curves"]');
+  await page.locator('#tabCurves .chip', { hasText: 'Tono→Sat.' }).click();
+  const box = await page.locator('#curveCanvas').boundingBox();
+  const at = (x, y) => [box.x + box.width * x, box.y + box.height * (1 - y)];
+  // punto nuevo en el azul, hacia abajo
+  await page.mouse.move(...at(0.67, 0.5)); await page.mouse.down();
+  await page.mouse.move(...at(0.67, 0.1), { steps: 5 }); await page.mouse.up(); await frame(page);
+  let pts = await page.evaluate(() => window.__app.store.get().hslCurves.sat);
+  assert.equal(pts.length, 3); assert.ok(pts[1][1] < 0.2, JSON.stringify(pts));
+  assert.equal(await page.evaluate(() => window.__app.store.get().curves.master.length), 2, 'no toca la curva RGB');
+  // mover el extremo izquierdo arrastra el derecho
+  await page.mouse.move(...at(0, 0.5)); await page.mouse.down();
+  await page.mouse.move(...at(0, 0.8), { steps: 4 }); await page.mouse.up(); await frame(page);
+  pts = await page.evaluate(() => window.__app.store.get().hslCurves.sat);
+  assert.ok(Math.abs(pts[0][1] - pts[pts.length - 1][1]) < 1e-6 && pts[0][1] > 0.7, JSON.stringify(pts));
+  await shot(page, '21-curvas-tono');
+  await page.locator('#tabCurves button', { hasText: 'Restablecer esta curva' }).click();
+  assert.deepEqual(await page.evaluate(() => window.__app.store.get().hslCurves.sat), [[0, 0.5], [1, 0.5]]);
+  await ctx.close();
+});
+
 t('recorte: proporción 1:1 y aplicar cambia el tamaño de la salida', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
   await openSample(page);
