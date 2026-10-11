@@ -20,6 +20,8 @@ export function defaultPrintSpec() {
   return {
     paper: '10x15', orientation: 'auto', custom: { w: 100, h: 150 }, dpi: 300,
     marginMm: 0, background: '#ffffff',
+    bleedMm: 0, marks: false, // sangrado (la foto y el fondo se extienden bajo el corte) y marcas de corte
+    color: { mode: 'srgb', profileId: null, profileName: '', intent: 'relative', bpc: true }, // 'profile' = convertir al perfil ICC de la imprenta
     cols: 1, rows: 1, gutterMm: 4, copies: 1,
     photoFit: 'cover',
     frame: { kind: 'border', widthMm: 5, color: '#ffffff', innerColor: '#2a2a2a', radiusMm: 4, customId: null, fit: 'contain' },
@@ -32,13 +34,20 @@ export function defaultPrintSpec() {
 export function migratePrintSpec(raw) {
   const d = defaultPrintSpec();
   const r = raw && typeof raw === 'object' ? raw : {};
-  const f = r.frame || {}; const l = r.logo || {}; const c = r.caption || {};
+  const f = r.frame || {}; const l = r.logo || {}; const c = r.caption || {}; const k = r.color || {};
   return {
     paper: pick(r.paper, PAPERS.map((p) => p.id), d.paper),
     orientation: pick(r.orientation, ['auto', 'portrait', 'landscape'], d.orientation),
     custom: { w: clamp(r.custom && r.custom.w, 20, 1000, d.custom.w), h: clamp(r.custom && r.custom.h, 20, 1000, d.custom.h) },
     dpi: pick(Number(r.dpi), DPI_OPTIONS, d.dpi),
     marginMm: clamp(r.marginMm, 0, 50, d.marginMm),
+    bleedMm: clamp(r.bleedMm, 0, 10, d.bleedMm), marks: !!r.marks,
+    color: {
+      mode: k.mode === 'profile' && typeof k.profileId === 'string' && k.profileId ? 'profile' : 'srgb',
+      profileId: typeof k.profileId === 'string' && k.profileId ? k.profileId.slice(0, 80) : null,
+      profileName: typeof k.profileName === 'string' ? k.profileName.slice(0, 120) : '',
+      intent: pick(k.intent, ['perceptual', 'relative', 'saturation', 'absolute'], d.color.intent), bpc: k.bpc !== false,
+    },
     background: color(r.background, d.background),
     cols: Math.round(clamp(r.cols, 1, 4, 1)), rows: Math.round(clamp(r.rows, 1, 4, 1)),
     gutterMm: clamp(r.gutterMm, 0, 30, d.gutterMm),

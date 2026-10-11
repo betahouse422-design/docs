@@ -9,8 +9,11 @@ function utf16hex(s) {
   return `<${out}>`;
 }
 
-// pages: [{ jpeg: Uint8Array, imgW, imgH, widthMm, heightMm }]
-export function buildPdf(pages, { title = 'Impresión' } = {}) {
+// pages: [{ jpeg: Uint8Array, imgW, imgH, widthMm, heightMm, trimMm?: {x, y, w, h}, bleedMm?: {x, y, w, h} }]
+//   widthMm/heightMm = tamaño total de la página (MediaBox); trimMm = zona que queda tras el corte y bleedMm = hasta
+//   dónde llega el sangrado (en mm desde la esquina SUPERIOR izquierda, como en la pantalla).
+// icc: perfil ICC (Uint8Array) de los colores de las imágenes. Sin él se declara DeviceRGB.
+export function buildPdf(pages, { title = 'Impresión', icc = null } = {}) {
   if (!pages.length) throw new Error('No hay páginas para el PDF.');
   const chunks = []; const offsets = {};
   let length = 0;
@@ -25,6 +28,7 @@ export function buildPdf(pages, { title = 'Impresión' } = {}) {
   push('%PDF-1.4\n');
   push(new Uint8Array([0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a])); // comentario binario
 
+  const iccObj = 4 + pages.length * 3; // perfil de color (si hay), después de las páginas
   const pageObj = (i) => 4 + i * 3; const contentObj = (i) => 5 + i * 3; const imageObj = (i) => 6 + i * 3;
   obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
   obj(2, `<< /Type /Pages /Count ${pages.length} /Kids [${pages.map((_, i) => `${pageObj(i)} 0 R`).join(' ')}] >>`);
@@ -32,12 +36,18 @@ export function buildPdf(pages, { title = 'Impresión' } = {}) {
 
   pages.forEach((p, i) => {
     const wpt = ((p.widthMm * 72) / 25.4).toFixed(3); const hpt = ((p.heightMm * 72) / 25.4).toFixed(3);
-    obj(pageObj(i), `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wpt} ${hpt}] /Resources << /XObject << /Im0 ${imageObj(i)} 0 R >> >> /Contents ${contentObj(i)} 0 R >>`);
+    const box = (b) => { // mm desde arriba-izquierda -> puntos desde abajo-izquierda
+      const mm = (v) => ((v * 72) / 25.4);
+      return `[${mm(b.x).toFixed(3)} ${(mm(p.heightMm) - mm(b.y + b.h)).toFixed(3)} ${mm(b.x + b.w).toFixed(3)} ${(mm(p.heightMm) - mm(b.y)).toFixed(3)}]`;
+    };
+    const boxes = (p.trimMm ? ` /TrimBox ${box(p.trimMm)}` : '') + (p.bleedMm ? ` /BleedBox ${box(p.bleedMm)}` : '');
+    obj(pageObj(i), `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wpt} ${hpt}]${boxes} /Resources << /XObject << /Im0 ${imageObj(i)} 0 R >> >> /Contents ${contentObj(i)} 0 R >>`);
     streamObj(contentObj(i), '', enc.encode(`q ${wpt} 0 0 ${hpt} 0 0 cm /Im0 Do Q`));
-    streamObj(imageObj(i), `/Type /XObject /Subtype /Image /Width ${p.imgW} /Height ${p.imgH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, p.jpeg);
+    streamObj(imageObj(i), `/Type /XObject /Subtype /Image /Width ${p.imgW} /Height ${p.imgH} /ColorSpace ${icc ? `[/ICCBased ${iccObj} 0 R]` : '/DeviceRGB'} /BitsPerComponent 8 /Filter /DCTDecode`, p.jpeg);
   });
 
-  const count = 3 + pages.length * 3 + 1; // objetos + el 0
+  if (icc) streamObj(iccObj, '/N 3 /Alternate /DeviceRGB', icc);
+  const count = 3 + pages.length * 3 + 1 + (icc ? 1 : 0); // objetos + el 0
   const xrefPos = length;
   let xref = `xref\n0 ${count}\n0000000000 65535 f \n`;
   for (let n = 1; n < count; n++) xref += `${String(offsets[n]).padStart(10, '0')} 00000 n \n`;

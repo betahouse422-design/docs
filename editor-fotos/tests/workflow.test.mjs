@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { startServer } from './serve.mjs';
 import { makeDng, patchesColor } from './make-dng.mjs';
+import { makeMatrixProfile, readIccHeader, extractIccFromJpeg } from '../src/icc.js';
 
 const shotsDir = process.argv[2];
 if (shotsDir) mkdirSync(shotsDir, { recursive: true });
@@ -852,6 +853,77 @@ if (REAL_RAW) t('RAW real de cámara (RAW_SAMPLE): abre, se ve razonable y expor
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 180000 }), page.click('#expGo')]);
   const dims = await page.evaluate(async (b64) => { const bmp = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + b64)).blob()); return [bmp.width, bmp.height]; }, readFileSync(await dl.path()).toString('base64'));
   assert.ok(dims[0] >= info.w * 0.97, `exportó a tamaño completo (${dims.join('×')} vs ${info.w}×${info.h})`);
+  await ctx.close();
+});
+
+t('color e imprenta: cargar un perfil ICC, convertir al exportar, simular en pantalla; el JPEG y el PDF llevan el perfil', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#ff1010' }]); // rojo saturado: queda fuera del gamut del perfil de prueba
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.locator('[data-job="all"] input').check();
+  await page.waitForSelector('#fileIcc', { state: 'attached' });
+  const small = makeMatrixProfile({ description: 'Gamut chico', colorants: [[0.3, 0.2, 0.02], [0.3, 0.55, 0.1], [0.13, 0.07, 0.62]], gamma: 2.2 });
+  // un archivo que no es un perfil avisa y no cambia nada
+  await page.locator('#fileIcc').setInputFiles({ name: 'malo.icc', mimeType: 'application/octet-stream', buffer: Buffer.from('esto no es un perfil de color') });
+  await page.waitForFunction(() => /no es un perfil/i.test(document.getElementById('toast').innerText), null, { timeout: 15000 });
+  assert.equal(await page.evaluate(() => window.__app.printUI.getSpec().color.mode), 'srgb');
+  // uno válido
+  await page.locator('#fileIcc').setInputFiles({ name: 'gamut-chico.icc', mimeType: 'application/octet-stream', buffer: Buffer.from(small) });
+  await page.waitForFunction(() => window.__app.printUI.state.icc, null, { timeout: 15000 });
+  assert.match(await page.locator('#iccName').innerText(), /Gamut chico \(RGB\)/);
+  assert.equal(await page.evaluate(() => window.__app.printUI.getSpec().color.mode), 'profile', 'al cargar un perfil RGB se activa la conversión');
+  await page.waitForTimeout(400);
+  const jpegOf = async () => { const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#btnJpegs')]); return readFileSync(await dl.path()); };
+  const red = (buf) => page.evaluate(async (b64) => { const bmp = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + b64)).blob(), { colorSpaceConversion: 'none' }); /* sin que el navegador deshaga el perfil incrustado */ const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; const g = c.getContext('2d'); g.drawImage(bmp, 0, 0); return [...g.getImageData(Math.floor(bmp.width * 0.1), Math.floor(bmp.height * 0.1), 1, 1).data.slice(0, 3)]; }, buf.toString('base64'));
+  const converted = await jpegOf();
+  assert.equal(Buffer.from(extractIccFromJpeg(converted)).equals(Buffer.from(small)), true, 'el JPEG lleva el perfil de la imprenta');
+  const rgbConv = await red(converted);
+  // volver a sRGB: otro perfil incrustado y colores distintos
+  await page.selectOption('details[data-sec="color"] select >> nth=0', 'srgb');
+  await page.waitForTimeout(400);
+  const plain = await jpegOf();
+  assert.equal(readIccHeader(extractIccFromJpeg(plain)).description, 'sRGB (Editor de fotos)');
+  const rgbPlain = await red(plain);
+  assert.ok(Math.abs(rgbConv[0] - rgbPlain[0]) + Math.abs(rgbConv[1] - rgbPlain[1]) + Math.abs(rgbConv[2] - rgbPlain[2]) > 20, `la conversión cambia los colores (${rgbPlain} -> ${rgbConv})`);
+  // simular en pantalla cambia la vista previa pero no lo exportado
+  const prev = () => page.evaluate(() => { const c = document.getElementById('printCanvas'); return [...c.getContext('2d').getImageData(Math.floor(c.width * 0.1), Math.floor(c.height * 0.1), 1, 1).data.slice(0, 3)]; });
+  const before = await prev();
+  await page.locator('#proofCheck').check(); await page.waitForTimeout(900);
+  const after = await prev();
+  assert.ok(Math.abs(before[0] - after[0]) + Math.abs(before[1] - after[1]) + Math.abs(before[2] - after[2]) > 8, `la simulación cambia la vista previa (${before} -> ${after})`);
+  await shot(page, '26-color-imprenta');
+  await ctx.close();
+});
+
+t('sangrado y marcas de corte en el PDF: la página crece y el PDF declara TrimBox y BleedBox', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#c05030' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.locator('[data-job="all"] input').check();
+  // sangrado 3 mm (deslizador) y marcas
+  await page.locator('details[data-sec="color"] .srow', { has: page.locator('label', { hasText: /^Sangrado$/ }) }).locator('input[type=range]').evaluate((el) => { el.value = '3'; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.locator('details[data-sec="color"] label.check', { hasText: 'Marcas de corte' }).locator('input').check();
+  await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => window.__app.printUI.getSpec().bleedMm), 3);
+  assert.equal(await page.evaluate(() => window.__app.printUI.getSpec().marks), true);
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#btnPdf')]);
+  const path = await dl.path();
+  try {
+    const sizeMm = (w, h) => `${(w * 25.4 / 72).toFixed(1)} x ${(h * 25.4 / 72).toFixed(1)}`;
+    const info = execFileSync('pdfinfo', ['-box', path]).toString();
+    const m = info.match(/Page size:\s+([\d.]+) x ([\d.]+) pts/);
+    assert.ok(m, info);
+    const [w, h] = [Number(m[1]), Number(m[2])];
+    // 10×15 cm de papel (4×6 in = 152,4 × 101,6 mm) + 2 × (3 mm de sangrado + 7 mm de marcas)
+    assert.ok(Math.abs(w * 25.4 / 72 - 172.4) < 0.7 && Math.abs(h * 25.4 / 72 - 121.6) < 0.7, `tamaño de página ${sizeMm(w, h)} mm`);
+    assert.match(info, /TrimBox:\s+/); assert.match(info, /BleedBox:\s+/);
+    const r = execFileSync('python3', ['-c', `
+from pypdf import PdfReader
+p = PdfReader(${JSON.stringify(path)}).pages[0]
+mm = lambda v: round(float(v) * 25.4 / 72, 1)
+print([mm(v) for v in p.trimbox], [mm(v) for v in p.bleedbox], p['/Resources']['/XObject']['/Im0']['/ColorSpace'][0])`]).toString();
+    assert.match(r, /\[10\.0, 10\.0, 162\.4, 111\.6\] \[7\.0, 7\.0, 165\.4, 114\.6\] \/ICCBased/, r);
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
   await ctx.close();
 });
 

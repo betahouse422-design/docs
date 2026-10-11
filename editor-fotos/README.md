@@ -13,6 +13,7 @@ Código propio (HTML, CSS, JavaScript y WebGL2), sin dependencias de ejecución.
 - **Varias fotos a la vez:** tira de miniaturas con estados (pendiente, editada, aprobada), copiar y pegar ajustes, aplicar un preset o el modo automático a todas.
 - **Impresión:** restaurantes con logo y configuración propia, papel y 300 ppp, varias por hoja, marcos generados y **marcos PNG cargables** (la ventana se detecta sola), logo movible, texto con variables, PDF, JPEG/ZIP y diálogo de impresión.
 - **Automáticos:** balance de blancos con gotero y automático, tono automático.
+- **RAW** (LibRaw, revelado lineal de 16 bits) y **color para imprenta**: perfiles ICC (conversión y simulación con Little CMS), perfil sRGB incrustado en JPEG/PDF, sangrado y marcas de corte.
 - **Curvas por tono** (Tono→Tono, Tono→Sat., Tono→Lum.), **looks LUT 3D** (`.cube`) y **zoom** hasta ×16 con 1:1.
 - **Máscaras:** degradado, radial y **pincel** con goma.
 - **Marca de agua:** exporta una foto suelta con el logo de un restaurante.
@@ -89,6 +90,6 @@ Lee `docs/ARQUITECTURA.md` para entender cómo está hecha y cómo añadir un aj
 
 ## Límites actuales
 
-Sin RAW, sin vídeo, sin máscaras con IA, sin sangrado ni marcas de corte para imprenta. Los presets importados se parecen al original pero no son idénticos: cada programa renderiza distinto y los ajustes sin equivalente (Dehaze, Textura, reducción de ruido...) se omiten.
+Sin RAW, sin vídeo, sin máscaras con IA. Los presets importados se parecen al original pero no son idénticos: cada programa renderiza distinto y los ajustes sin equivalente (Dehaze, Textura, reducción de ruido...) se omiten.
 
 La lista de ideas pendientes, sacada del estudio, está en `docs/estudio/03_funciones_a_considerar.md`. De dónde salen los presets y bajo qué licencia: `presets/NOTICE.md` y `docs/estudio/04_fuentes_de_presets.md`.

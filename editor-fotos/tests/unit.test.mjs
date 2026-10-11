@@ -1077,3 +1077,16 @@ test('RAW: conversión a half-float y extensiones', async () => {
   assert.equal(isRawName('IMG_0001.CR2'), true); assert.equal(isRawName('foto.DNG'), true); assert.equal(isRawName('foto.jpg'), false);
   assert.equal(isRawName('dng'), false); assert.ok(RAW_EXTENSIONS.includes('arw') && RAW_EXTENSIONS.includes('nef'));
 });
+
+test('printspec: sangrado, marcas y perfil de color se sanean y migran', async () => {
+  const { defaultPrintSpec, migratePrintSpec } = await import('../src/printspec.js');
+  const d = defaultPrintSpec();
+  assert.equal(d.bleedMm, 0); assert.equal(d.marks, false); assert.deepEqual(d.color, { mode: 'srgb', profileId: null, profileName: '', intent: 'relative', bpc: true });
+  const m = migratePrintSpec({ bleedMm: 99, marks: 1, color: { mode: 'profile', profileId: 'icc1', profileName: 'Mi papel', intent: 'raro', bpc: false } });
+  assert.equal(m.bleedMm, 10); assert.equal(m.marks, true);
+  assert.deepEqual(m.color, { mode: 'profile', profileId: 'icc1', profileName: 'Mi papel', intent: 'relative', bpc: false });
+  assert.equal(migratePrintSpec({ color: { mode: 'profile' } }).color.mode, 'srgb', 'sin perfil no se puede convertir');
+  assert.equal(migratePrintSpec({ bleedMm: -4 }).bleedMm, 0);
+  assert.deepEqual(migratePrintSpec(migratePrintSpec(m)), m, 'idempotente');
+  assert.deepEqual(migratePrintSpec({}).color, d.color, 'restaurantes guardados antes de existir el color');
+});

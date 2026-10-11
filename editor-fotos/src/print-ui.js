@@ -12,6 +12,8 @@ import {
   composePage, cellWindowSizes, loadImageAsset, detectWindow, canvasToJpegBytes,
 } from './compose.js';
 import { buildPdf } from './pdf.js';
+import { makeSrgbProfile, embedIccInJpeg, readIccHeader } from './icc.js';
+import { INTENTS, convertCanvas, softProofCanvas, profileInfo } from './colorman.js';
 import { buildZip } from './zip.js';
 import { selectJobIds, cropWarnings, effectivePpi, visibleAspect } from './workflow.js';
 import * as storage from './storage.js';
@@ -34,7 +36,7 @@ const POSITIONS = [
 export function createPrintUI(ctx) {
   const { lib, toast, sliderRow, download } = ctx;
   const S = {
-    brands: [], brand: null, frames: [], assets: { logo: null, frame: null },
+    brands: [], brand: null, frames: [], assets: { logo: null, frame: null }, icc: null, proof: false, gamut: false, srgbIcc: makeSrgbProfile(),
     jobMode: 'approved', open: { restaurante: true, hoja: true, marco: true },
     previewToken: 0, previewTimer: 0, saveTimer: 0, last: null, busy: false,
   };
@@ -57,10 +59,17 @@ export function createPrintUI(ctx) {
   }
 
   async function loadAssets() {
-    S.assets.logo = null; S.assets.frame = null;
+    S.assets.logo = null; S.assets.frame = null; S.icc = null;
     if (S.brand.logoId) {
       const rec = await storage.getAsset(S.brand.logoId);
       if (rec) { try { S.assets.logo = { ...(await loadImageAsset(rec.blob)), id: rec.id, blob: rec.blob }; } catch { /* logo ilegible */ } }
+    }
+    const pid = spec().color.profileId;
+    if (pid) {
+      const rec = await storage.getAsset(pid);
+      if (rec) {
+        try { const bytes = new Uint8Array(await rec.blob.arrayBuffer()); const h = readIccHeader(bytes); if (h) S.icc = { id: rec.id, name: rec.name, bytes, space: h.space, description: h.description }; } catch { /* perfil ilegible */ }
+      }
     }
     const fid = spec().frame.customId;
     if (fid) {
@@ -170,6 +179,9 @@ export function createPrintUI(ctx) {
     if (token !== S.previewToken) return; // llegó una petición más nueva
     canvas.width = result.canvas.width; canvas.height = result.canvas.height;
     canvas.getContext('2d').drawImage(result.canvas, 0, 0);
+    if (S.proof && S.icc) { // simulación en pantalla de cómo se vería impreso con el perfil de la imprenta
+      try { const k = sp.color; await softProofCanvas(canvas, S.icc.bytes, { intent: k.intent, bpc: k.bpc, gamutCheck: S.gamut }); } catch (err) { console.error(err); }
+    }
     // ajustar al espacio disponible
     const cs = getComputedStyle(viewport);
     const aw = viewport.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
@@ -178,7 +190,8 @@ export function createPrintUI(ctx) {
     canvas.style.width = `${Math.floor(canvas.width * k)}px`; canvas.style.height = `${Math.floor(canvas.height * k)}px`;
     S.last = { cells: result.cells, geometry: result.geometry, w: canvas.width, h: canvas.height };
     const mm = result.geometry.mm;
-    info.textContent = `${PAPERS.find((p) => p.id === sp.paper)?.label.split(' (')[0] || ''} · ${mm.w.toFixed(0)} × ${mm.h.toFixed(0)} mm · ${sp.dpi} ppp` + (usingCurrent ? ' · vista previa de la foto actual' : '');
+    info.textContent = `${PAPERS.find((p) => p.id === sp.paper)?.label.split(' (')[0] || ''} · ${mm.w.toFixed(0)} × ${mm.h.toFixed(0)} mm · ${sp.dpi} ppp`
+      + (sp.bleedMm > 0 ? ` · sangrado ${sp.bleedMm} mm` : '') + (S.proof && S.icc ? ' · simulando el perfil de la imprenta' : '') + (usingCurrent ? ' · vista previa de la foto actual' : '');
     updateSummary();
   }
 
@@ -348,6 +361,53 @@ export function createPrintUI(ctx) {
       field('Foto en la ventana', select('photoFit', [['cover', 'Llenar (recorta lo que sobre)'], ['contain', 'Entera (deja franjas)']])));
   }
 
+
+  // ---- Color y corte
+  async function setProfile(file) {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!readIccHeader(bytes)) throw new Error('Ese archivo no es un perfil de color ICC (.icc / .icm).');
+      const info = await profileInfo(bytes); // lo valida Little CMS
+      const rec = { id: storage.newId('icc'), kind: 'icc', name: file.name.replace(/\.[^.]+$/, ''), blob: file, space: info.space, createdAt: Date.now() };
+      await storage.putAsset(rec);
+      const k = spec().color; k.profileId = rec.id; k.profileName = info.description || rec.name; k.mode = info.space === 'RGB' ? 'profile' : 'srgb';
+      await loadAssets(); changed(true);
+      toast(info.space === 'RGB' ? 'Perfil cargado: las fotos se convertirán a ese perfil al exportar.' : `Perfil ${info.space} cargado: sirve para simular la impresión; se exporta en sRGB.`, info.space !== 'RGB');
+    } catch (err) { toast(err.message || 'No se pudo leer ese perfil', true); }
+  }
+  async function removeProfile() {
+    const k = spec().color;
+    if (k.profileId) { try { await storage.deleteAsset(k.profileId); } catch { /* ya no estaba */ } }
+    k.profileId = null; k.profileName = ''; k.mode = 'srgb'; S.proof = false; S.gamut = false;
+    await loadAssets(); changed(true);
+  }
+  const profileActive = () => !!(S.icc && S.icc.space === 'RGB' && spec().color.mode === 'profile');
+
+  function colorSection() {
+    const sp = spec(); const k = sp.color;
+    const proofCb = el('input', { type: 'checkbox', id: 'proofCheck' }); proofCb.checked = S.proof; proofCb.disabled = !S.icc;
+    proofCb.addEventListener('change', () => { S.proof = proofCb.checked; if (!S.proof) S.gamut = false; build(); schedulePreview(); });
+    const gamutCb = el('input', { type: 'checkbox', id: 'gamutCheck' }); gamutCb.checked = S.gamut; gamutCb.disabled = !S.icc || !S.proof;
+    gamutCb.addEventListener('change', () => { S.gamut = gamutCb.checked; schedulePreview(); });
+    const profileBox = S.icc
+      ? el('div', { class: 'row' }, el('span', { class: 'hint', id: 'iccName' }, `${S.icc.description || S.icc.name} (${S.icc.space})`), el('button', { class: 'btn small', type: 'button', onClick: removeProfile }, 'Quitar'))
+      : el('span', { class: 'hint' }, 'Sin perfil: se exporta en sRGB.');
+    const mode = select('color.mode', [['srgb', 'sRGB (lo normal en laboratorios)'], ['profile', 'Convertir al perfil de la imprenta']], () => changed(true));
+    mode.disabled = !(S.icc && S.icc.space === 'RGB');
+    return section('color', 'Color y corte',
+      field('Color de salida', mode), profileBox,
+      fileButton('Cargar perfil .icc…', '.icc,.icm,application/vnd.iccprofile', setProfile, { id: 'fileIcc' }),
+      profileActive() ? field('Intención de conversión', select('color.intent', INTENTS.map((i) => [i.id, i.label]))) : null,
+      profileActive() ? check('color.bpc', 'Compensación del punto negro') : null,
+      el('label', { class: 'check' }, proofCb, 'Simular la impresión en pantalla'),
+      S.proof ? el('label', { class: 'check' }, gamutCb, 'Marcar los colores que el papel no alcanza') : null,
+      el('p', { class: 'hint' }, 'El perfil lo da tu imprenta (o el fabricante del papel). Si no tienes uno, deja sRGB: el archivo lleva un perfil sRGB incrustado.'),
+      el('div', { class: 'sub' }, 'Sangrado y marcas'),
+      specSlider('Sangrado', 'bleedMm', 0, 10, 0.5, 'mm'),
+      check('marks', 'Marcas de corte', true),
+      el('p', { class: 'hint' }, 'El sangrado extiende el fondo (y las fotos, si el margen es 0) por fuera del corte, para que no queden bordes blancos si el corte se corre. Pregunta a tu imprenta cuánto necesita (suele ser 3 mm).'));
+  }
+
   // ---- Marco
   async function addFrame(file) {
     if (!/^image\//.test(file.type)) { toast('El marco debe ser una imagen PNG con la ventana transparente', true); return; }
@@ -461,7 +521,7 @@ export function createPrintUI(ctx) {
 
   function build() {
     if (!S.brand) return;
-    root.replaceChildren(brandSection(), sheetSection(), frameSection(), logoSection(), textSection(), jobSection(), actionsSection());
+    root.replaceChildren(brandSection(), sheetSection(), frameSection(), logoSection(), textSection(), colorSection(), jobSection(), actionsSection());
     updateSummary();
   }
 
@@ -513,8 +573,13 @@ export function createPrintUI(ctx) {
       progress(`${label}: hoja ${i + 1} de ${pages.length}…`);
       await new Promise((r) => setTimeout(r, 15)); // deja respirar a la pantalla
       const { canvas: c, geometry } = await buildPage(pages[i], sp.dpi);
-      const jpeg = await canvasToJpegBytes(c, 0.95);
-      out.push({ jpeg, imgW: c.width, imgH: c.height, widthMm: geometry.mm.w, heightMm: geometry.mm.h });
+      let icc = S.srgbIcc;
+      if (profileActive()) { await convertCanvas(c, S.icc.bytes, { intent: sp.color.intent, bpc: sp.color.bpc }); icc = S.icc.bytes; }
+      const jpeg = embedIccInJpeg(await canvasToJpegBytes(c, 0.95), icc); // el perfil va dentro del archivo
+      out.push({
+        jpeg, imgW: c.width, imgH: c.height, widthMm: geometry.mediaMm.w, heightMm: geometry.mediaMm.h, icc,
+        trimMm: geometry.extra ? geometry.trimMm : null, bleedMm: geometry.extra && sp.bleedMm > 0 ? geometry.bleedBoxMm : null,
+      });
     }
     progress('');
     return out;
@@ -527,7 +592,7 @@ export function createPrintUI(ctx) {
     try {
       const pages = await renderJob('PDF');
       if (!pages) return;
-      const bytes = buildPdf(pages, { title: `${S.brand.name} — impresión` });
+      const bytes = buildPdf(pages, { title: `${S.brand.name} — impresión`, icc: pages[0].icc });
       download(new Blob([bytes], { type: 'application/pdf' }), `${fileBase()}.pdf`);
       toast(`PDF listo: ${pages.length} hoja${pages.length === 1 ? '' : 's'}`);
     } catch (err) { console.error(err); toast('No se pudo crear el PDF', true); progress(''); } finally { S.busy = false; }

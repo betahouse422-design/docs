@@ -26,6 +26,9 @@ main.js ──► store.js ──► model.js ◄── curves.js, geometry.js  
 | `workflow.js` | Estados de las fotos, copiar/pegar ajustes, recorte al marco, avisos de resolución. Sin DOM. |
 | `auto.js` | Balance de blancos (inversa del shader), tono automático, origen automático para quitar manchas. Sin DOM. |
 | `pdf.js`, `zip.js` | Generadores propios de PDF (una imagen JPEG por página) y ZIP. Sin dependencias. |
+| `raw.js` | Revela RAW con LibRaw (copia en `vendor/libraw-wasm`): RGB lineal de 16 bits, conversión a half-float. |
+| `icc.js` | Genera perfiles sRGB/matriz ICC, los incrusta en JPEG y lee cabeceras. Sin DOM. |
+| `colorman.js` | Conversión sRGB → perfil de la imprenta y simulación de impresión con Little CMS (`vendor/lcms-wasm`). |
 | `lut.js` | Lector de LUT 3D `.cube` (validado, con mensajes claros). Sin DOM. |
 | `brush.js` | Trazos del pincel de máscaras: limpieza y rasterizado a una imagen de transparencia (lo usan el motor y la capa interactiva). |
 | `compose.js` | Dibuja una hoja: marco, foto, logo, texto (Canvas 2D). |
@@ -115,3 +118,9 @@ El balance de blancos de `auto.js` es la inversa exacta del modelo del shader. S
 - **Zoom:** un vertex shader propio (`VERT_VIEW`) recorre solo la parte visible: `v_uv = centro + (uv − 0.5)/z`. Todo el fragment shader trabaja con ese `v_uv`, así que viñeta, máscaras, retoque y mipmaps siguen a la imagen sin cambios. El nivel del mipmap se calcula con el zoom y el tamaño del grano se mide respecto a la imagen. Solo la vista de pantalla pasa `view`; la exportación y la impresión nunca llevan zoom. Las herramientas que dibujan sobre la foto (retoque, gotero) convierten entre coordenadas de la vista y de la imagen con `cropToView` / `viewToCrop` en `main.js`. En Recorte y Máscaras el zoom se suspende.
 - **Looks:** el archivo `.cube` se guarda como recurso (`assets`, tipo `look`); las ediciones solo guardan su id, nombre e intensidad. Se sube como textura 3D RGBA16F y se muestrea con filtro lineal (interpolación trilineal). Cada motor (la vista y el de trabajo para miniaturas e impresión) carga la tabla que pide la foto antes de dibujar; si no la tiene, la foto se ve sin look en vez de fallar.
 - **Curvas por tono:** tres curvas con x = tono y y = 0.5 como "sin cambio", guardadas en `hslCurves`. Comparten la textura de tablas con las curvas de tono (filas 4 a 6 de 8). Los extremos 0° y 360° se mantienen iguales y los grises no se modifican.
+
+## RAW y color para imprenta
+
+- **RAW:** `decodeRaw` pide a LibRaw RGB lineal de 16 bits (curva `[1,1,0,0,0,0]`, sin autobrillo, `adjustMaximumThr: 0` para respetar el nivel de blanco de la cámara). `Engine.setSourceLinear` lo sube como textura RGBA16F por franjas (conversión a half-float con una tabla de 65 536 entradas) y genera mipmaps; el resto del shader no cambia porque el origen ya es lineal. Si la GPU no admite `EXT_color_buffer_float`, se baja a un canvas sRGB de 8 bits. Se edita a media resolución y se revela a tamaño completo bajo demanda (`ensureFullRaw`: zoom, exportar; el motor de trabajo lo hace al imprimir ≥ 200 ppp).
+- **Color de salida:** el canvas de la hoja se convierte con `convertCanvas` (franjas de ~1,5 Mpx) si hay perfil RGB activo; el perfil elegido o el sRGB generado se incrusta en el JPEG (`embedIccInJpeg` quita antes cualquier perfil que ya traiga, como el de Chrome) y en el PDF como `ICCBased`. Los resultados de conversión y de simulación coinciden con los de Pillow (Little CMS).
+- **Sangrado y marcas:** `composePage` agranda el lienzo (sangrado + hueco + marcas), rellena el fondo hasta el borde del sangrado, extiende las fotos si el margen es 0 y dibuja las marcas fuera del sangrado. La geometría devuelve `mediaMm`, `trimMm` y `bleedBoxMm`; el PDF los usa para MediaBox, TrimBox y BleedBox.

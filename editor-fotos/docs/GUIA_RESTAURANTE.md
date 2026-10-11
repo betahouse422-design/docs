@@ -3,8 +3,15 @@
 Flujo pensado para fotografiar platillos y ambiente en restaurantes y entregar fotos impresas con marco y logo.
 
 ## 1. Abrir las fotos
+- Formatos: JPEG, PNG, WebP (HEIC en Safari) y **RAW** (ARW, CR2/CR3, NEF, DNG, RAF, ORF, RW2 y más; ver "RAW" abajo).
 - **Abrir fotos** (o arrástralas aquí): puedes abrir varias a la vez. Quedan en una **tira de miniaturas** abajo y se guardan en tu dispositivo, aunque cierres la app.
 - Cada foto tiene un estado: **pendiente** (sin tocar), **editada** (✎, azul) y **aprobada** (✓, verde).
+
+## RAW
+- Un RAW se **revela** al abrirlo (tarda 1 o 2 segundos) con el balance de blancos de la cámara y un tono automático de partida. Tiene una etiqueta **RAW** en la miniatura.
+- Editas a media resolución para que vaya rápido. Al **acercar el zoom**, al **exportar** o al **imprimir** se revela otra vez a tamaño completo (tarda unos segundos la primera vez).
+- Un RAW conserva más luz que un JPEG: puedes subir o bajar la exposición y recuperar luces y sombras con mucho más margen.
+- Si un archivo RAW no se puede revelar, la app te lo dice y no lo agrega.
 
 ## 2. Editar
 Pestaña **Ajustes**:
@@ -40,6 +47,7 @@ Pestaña **Presets**: 8 de arranque, 449 de película y estilos (con búsqueda),
 
 ## 4. Imprimir (botón **Imprimir** arriba del panel)
 **Restaurante y logo:** crea un restaurante por cliente, carga su logo (PNG con fondo transparente, o SVG) y todo lo siguiente se guarda **para ese restaurante**.
+**Color y corte (para la imprenta):** al final del panel. Si tu imprenta te da un perfil de color (`.icc`), cárgalo y elige "Convertir al perfil de la imprenta": las fotos se convierten a ese perfil al exportar y el perfil va dentro del archivo. "Simular la impresión en pantalla" muestra aproximadamente cómo saldrá (y marca lo que el papel no alcanza). Un perfil CMYK solo sirve para simular. Sin perfil, el archivo sale en sRGB con su perfil incrustado. **Sangrado** extiende el fondo y las fotos (si el margen es 0) por fuera del corte, y **Marcas de corte** las dibuja; el PDF declara TrimBox y BleedBox. Pregunta a tu imprenta qué necesita.
 **Papel y hoja:** tamaño (10×15, 13×18, 15×20, 20×25, A4…), orientación (automática según la foto), 300 ppp, cuántas fotos por hoja y cuántas copias.
 **Marco:** generados (borde, doble borde, polaroid, esquinas redondeadas, paspartú) o **tus propios marcos**: carga un PNG con la zona de la foto transparente; la app detecta la ventana sola.
 **Posición del logo:** arrástralo sobre la vista previa o usa los botones de posición; tamaño, opacidad y un fondo opcional para que se lea.
@@ -61,8 +69,7 @@ Salidas:
 - Tus fotos y ajustes viven en el navegador de este dispositivo. Si limpias los datos del sitio, se borran. Exporta lo importante.
 
 ## Límites actuales
-- Sin RAW (solo formatos que abre el navegador: JPEG, PNG, WebP; HEIC en Safari).
-- Sin gestión de perfiles de color de impresora: se trabaja en sRGB. Para un color crítico, pide una prueba a la imprenta.
-- Sin sangrado ni marcas de corte para imprenta.
+- Algunos RAW muy nuevos o con compresiones raras pueden no abrirse (depende de LibRaw 0.21).
+- Los perfiles de impresora solo se usan si son RGB; con un perfil CMYK se puede simular pero no exportar en CMYK. Para un color crítico, pide una prueba a la imprenta.
 - Sin máscaras con IA (cielo, piel, sujeto).
 - Sin edición de metadatos ni integración directa con Apple Fotos (en el iPhone, "Abrir fotos" te deja elegirlas desde Fotos).

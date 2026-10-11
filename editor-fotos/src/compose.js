@@ -121,21 +121,38 @@ export function cellWindowSizes(spec, assets, photoAspect, dpi) {
 export function composePage(spec, items, assets = {}, opts = {}) {
   const frameAsset = spec.frame.kind === 'custom' ? assets.frame : null;
   const g = pageGeometry(spec, opts.dpi || spec.dpi, (items[0] && items[0].aspect) || 1.5, frameAsset);
+
+  // Sangrado y marcas de corte: el lienzo crece alrededor de la hoja final ("trim"). Con marcas se deja una franja
+  // blanca (el "slug") fuera del sangrado para dibujarlas.
+  const bleedMm = Math.max(0, Number(spec.bleedMm) || 0);
+  const marks = !!spec.marks;
+  const SLUG_GAP_MM = 2; const MARK_LEN_MM = 5;
+  const extMm = bleedMm + (marks ? SLUG_GAP_MM + MARK_LEN_MM : 0);
+  const mmToDev = (mm) => mmToPx(mm, g.dpi);
+  const ext = Math.round(mmToDev(extMm)); const bleed = Math.round(mmToDev(bleedMm));
+  const W = g.px.w + 2 * ext; const Hh = g.px.h + 2 * ext;
+  const trim = { x: ext, y: ext, w: g.px.w, h: g.px.h };
+  const bleedRect = { x: ext - bleed, y: ext - bleed, w: g.px.w + 2 * bleed, h: g.px.h + 2 * bleed };
+
   const canvas = document.createElement('canvas');
-  canvas.width = g.px.w; canvas.height = g.px.h;
+  canvas.width = W; canvas.height = Hh;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = spec.background; ctx.fillRect(0, 0, g.px.w, g.px.h);
+  if (ext > 0) { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, Hh); }
+  ctx.fillStyle = spec.background; ctx.fillRect(bleedRect.x, bleedRect.y, bleedRect.w, bleedRect.h);
   ctx.imageSmoothingQuality = 'high';
 
-  const inner = insetRect({ x: 0, y: 0, w: g.px.w, h: g.px.h }, mmToPx(spec.marginMm, g.dpi));
-  const cells = gridCells(inner, spec.cols, spec.rows, mmToPx(spec.gutterMm, g.dpi));
+  // Con margen 0 las fotos llegan hasta el borde del sangrado (a sangre); con margen, se miden desde el corte.
+  const marginPx = mmToDev(spec.marginMm);
+  const inner = spec.marginMm > 0 ? insetRect(trim, marginPx) : bleedRect;
+  const cells = gridCells(inner, spec.cols, spec.rows, mmToDev(spec.gutterMm));
+  ctx.save(); ctx.beginPath(); ctx.rect(bleedRect.x, bleedRect.y, bleedRect.w, bleedRect.h); ctx.clip(); // nada se pasa del sangrado
   items.slice(0, cells.length).forEach((item, i) => {
     const cell = cells[i];
     const cw = cellWindow(spec.frame, cell, g.dpi, frameAsset);
     if (cw.custom) {
-      const bleed = Math.max(1, g.dpi / 100); // la foto asoma bajo el marco: no queda rendija
+      const over = Math.max(1, g.dpi / 100); // la foto asoma bajo el marco: no queda rendija
       ctx.save(); ctx.beginPath(); ctx.rect(cell.x, cell.y, cell.w, cell.h); ctx.clip();
-      drawPhoto(ctx, item, cw.window, spec.photoFit, bleed);
+      drawPhoto(ctx, item, cw.window, spec.photoFit, over);
       ctx.drawImage(frameAsset.img, cw.dest.x, cw.dest.y, cw.dest.w, cw.dest.h);
       ctx.restore();
     } else {
@@ -144,12 +161,34 @@ export function composePage(spec, items, assets = {}, opts = {}) {
     drawLogo(ctx, spec, cell, assets, g.dpi);
     drawCaption(ctx, spec, cell, item.caption, g.dpi);
   });
+  ctx.restore();
 
-  if (opts.guides && cells.length > 1) { // marcas de corte entre fotos
+  if (opts.guides && cells.length > 1) { // guías entre fotos
     ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1; ctx.setLineDash([6, 6]);
     for (const c of cells) ctx.strokeRect(c.x, c.y, c.w, c.h);
+    ctx.setLineDash([]);
   }
-  return { canvas, geometry: g, cells };
+
+  if (marks) { // marcas de corte en las cuatro esquinas, fuera del sangrado (en el centro de un píxel: líneas nítidas)
+    const off = Math.round(mmToDev(bleedMm + SLUG_GAP_MM)); const len = Math.max(4, Math.round(mmToDev(MARK_LEN_MM)));
+    ctx.strokeStyle = '#000000'; ctx.lineWidth = Math.max(1, Math.round((0.25 / 72) * g.dpi)); ctx.setLineDash([]);
+    const c = (v) => Math.round(v) + 0.5;
+    for (const [cx, cy, sx, sy] of [[trim.x, trim.y, -1, -1], [trim.x + trim.w - 1, trim.y, 1, -1], [trim.x, trim.y + trim.h - 1, -1, 1], [trim.x + trim.w - 1, trim.y + trim.h - 1, 1, 1]]) {
+      ctx.beginPath(); ctx.moveTo(cx + sx * off, c(cy)); ctx.lineTo(cx + sx * (off + len), c(cy)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(c(cx), cy + sy * off); ctx.lineTo(c(cx), cy + sy * (off + len)); ctx.stroke();
+    }
+  }
+
+  const mm = (px) => (px / g.dpi) * 25.4;
+  const geometry = {
+    ...g,
+    // `mm` / `px` siguen siendo la hoja final (tras el corte); `media*` es todo el lienzo; `trimMm` y `bleedMm` van en mm desde arriba-izquierda
+    mediaMm: { w: mm(W), h: mm(Hh) },
+    trimMm: { x: mm(trim.x), y: mm(trim.y), w: mm(trim.w), h: mm(trim.h) },
+    bleedBoxMm: { x: mm(bleedRect.x), y: mm(bleedRect.y), w: mm(bleedRect.w), h: mm(bleedRect.h) },
+    extra: ext > 0,
+  };
+  return { canvas, geometry, cells };
 }
 
 // ---------- carga de recursos ----------
