@@ -27,8 +27,8 @@ await page.waitForFunction(() => window.__ready === true, null, { timeout: 15000
 
 // ---- ayudantes dentro de la página ----
 await page.evaluate(() => {
-  const { engine, model } = window.__t;
-  window.model = model;
+  const { engine, model, lut } = window.__t;
+  window.model = model; window.lut = lut;
   const H = {};
   H.edits = () => model.defaultEdits();
   H.load = (w, h, kind) => {
@@ -537,6 +537,44 @@ t('curvas por tono: los grises no se tocan aunque la curva sea extrema', async (
     __h.render(e); return __h.px(0.5, 0.5);
   });
   r.forEach((v) => near(v, 128, 3, 'gris'));
+});
+
+t('look LUT 3D: invertir colores, intensidad a medias, identidad y look sin cargar', async () => {
+  const r = await run(() => {
+    __h.load(128, 128, 'colors'); // rojo (200,60,60) | azul | piel | verde
+    const inv = lut.parseCube(lut.cubeText(9, (r, g, b) => [1 - r, 1 - g, 1 - b], 'inversa'));
+    const e = __h.edits(); e.look = { id: 'inv', name: 'inversa', intensity: 100 };
+    __h.render(e); const sinCargar = __h.px(0.1, 0.5);              // aún no se subió la tabla: se ve la foto normal
+    window.__t.engine.setLook('inv', inv);
+    __h.render(e); const full = __h.px(0.1, 0.5);
+    e.look.intensity = 50; __h.render(e); const half = __h.px(0.1, 0.5);
+    e.look.intensity = 0; __h.render(e); const zero = __h.px(0.1, 0.5);
+    window.__t.engine.setLook('id', lut.identityLut(17));
+    const e2 = __h.edits(); e2.look = { id: 'id', name: 'id', intensity: 100 };
+    __h.render(e2); const ident = [__h.px(0.1, 0.5), __h.px(0.35, 0.5), __h.px(0.6, 0.5)];
+    window.__t.engine.setLook('inv', inv); const e3 = __h.edits(); e3.look = { id: 'otro', name: 'x', intensity: 100 };
+    __h.render(e3); const otro = __h.px(0.1, 0.5); // pide un look distinto del cargado: se ignora
+    return { sinCargar, full, half, zero, ident, otro };
+  });
+  r.sinCargar.forEach((v, i) => near(v, [200, 60, 60][i], 2, 'sin la tabla cargada no cambia'));
+  r.full.forEach((v, i) => near(v, [55, 195, 195][i], 4, 'invertido'));
+  r.half.forEach((v, i) => near(v, [127.5, 127.5, 127.5][i], 5, 'a medias'));
+  r.zero.forEach((v, i) => near(v, [200, 60, 60][i], 2, 'intensidad 0'));
+  [[200, 60, 60], [60, 60, 200], [200, 150, 120]].forEach((w, k) => r.ident[k].forEach((v, i) => near(v, w[i], 3, `identidad parche ${k}`)));
+  r.otro.forEach((v, i) => near(v, [200, 60, 60][i], 2, 'look distinto del cargado'));
+});
+
+t('look LUT 3D: la tabla se muestrea bien entre nodos (LUT chica con rampa)', async () => {
+  const r = await run(() => {
+    __h.load(256, 16, 'ramp');
+    const l = lut.parseCube(lut.cubeText(2, (r, g, b) => [r * r, g * g, b * b], 'cuadrado')); // 2 nodos: interpolación lineal => identidad
+    window.__t.engine.setLook('c', l);
+    const e = __h.edits(); e.look = { id: 'c', name: 'c', intensity: 100 };
+    __h.render(e); const out = []; for (let i = 1; i < 8; i++) out.push(__h.px(i / 8, 0.5)[0]);
+    __h.render(__h.edits()); const base = []; for (let i = 1; i < 8; i++) base.push(__h.px(i / 8, 0.5)[0]);
+    return { out, base };
+  });
+  r.out.forEach((v, i) => near(v, r.base[i], 4, `punto ${i}`)); // con solo 2 nodos 0 y 1 la tabla equivale a la identidad
 });
 
 for (const [name, fn] of tests) {

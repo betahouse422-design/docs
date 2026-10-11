@@ -11,7 +11,7 @@ import { VERT, DOWN_FRAG, BLUR_FRAG, MAIN_FRAG } from './shaders.js';
 import { buildLUT, LUT_SIZE } from './curves.js';
 import { strokesToAlpha } from './brush.js';
 import {
-  HSL_RANGES, CURVE_CHANNELS, HSL_CURVES, defaultEdits, curvesActive, hslCurvesActive, hslActive, gradingActive,
+  HSL_RANGES, CURVE_CHANNELS, HSL_CURVES, lookActive, defaultEdits, curvesActive, hslCurvesActive, hslActive, gradingActive,
 } from './model.js';
 
 const BLUR_LONG_SIDE = 512;
@@ -50,6 +50,8 @@ export class Engine {
     this.lutTex = this._makeLutTexture();
     this.brushTex = this._makeBrushTexture();
     this.brushKey = '';
+    this.lookTex = this._makeLookTexture();
+    this.lookId = null; this.lookInfo = null;
     this.lutKey = '';
     this.edits = defaultEdits();
     this.lastSize = [1, 1];
@@ -158,6 +160,26 @@ export class Engine {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return tex;
+  }
+
+  // LUT 3D del look: RGBA16F N³ (se filtra en lineal entre nodos).
+  _makeLookTexture() {
+    const gl = this.gl;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, tex);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, 2, 2, 2, 0, gl.RGBA, gl.FLOAT, new Float32Array(2 * 2 * 2 * 4));
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, k, v);
+    return tex;
+  }
+
+  // lut = resultado de parseCube() o null para quitar el look. `id` identifica cuál está cargada.
+  setLook(id, lut) {
+    const gl = this.gl;
+    if (!lut) { this.lookId = null; this.lookInfo = null; return; }
+    gl.bindTexture(gl.TEXTURE_3D, this.lookTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, lut.size, lut.size, lut.size, 0, gl.RGBA, gl.FLOAT, lut.data);
+    this.lookId = id; this.lookInfo = { size: lut.size, min: lut.domainMin, max: lut.domainMax };
   }
 
   // Un solo RGBA8: el canal i guarda el pincel de la máscara activa número i.
@@ -269,6 +291,15 @@ export class Engine {
     this._bindTex(2, this.lutTex);
     this._bindTex(3, this.brushTex);
     gl.uniform1i(P.u('u_brush'), 3);
+    gl.activeTexture(gl.TEXTURE0 + 4); gl.bindTexture(gl.TEXTURE_3D, this.lookTex);
+    gl.uniform1i(P.u('u_look'), 4);
+    // el look solo se aplica si su tabla ya está cargada en este motor
+    const lookOn = lookActive(e) && this.lookInfo && this.lookId === e.look.id;
+    gl.uniform1f(P.u('u_lookAmt'), lookOn ? e.look.intensity / 100 : 0);
+    if (lookOn) {
+      gl.uniform3fv(P.u('u_lookMin'), this.lookInfo.min); gl.uniform3fv(P.u('u_lookMax'), this.lookInfo.max);
+      gl.uniform1f(P.u('u_lookSize'), this.lookInfo.size);
+    }
     gl.uniform1i(P.u('u_src'), 0);
     gl.uniform1i(P.u('u_blur'), 1);
     gl.uniform1i(P.u('u_lut'), 2);

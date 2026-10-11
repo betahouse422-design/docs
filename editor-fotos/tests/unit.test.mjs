@@ -1019,3 +1019,44 @@ test('un preset con curva por tono se mezcla con la intensidad', () => {
   assert.ok(Math.abs(out.hslCurves.sat[1][1] - 0.75) < 1e-6);
   assert.deepEqual(applyPreset(defaultEdits(), p, 0).hslCurves.sat, [[0, 0.5], [1, 0.5]]);
 });
+
+test('LUT .cube: lee una tabla válida (comentarios, título, dominio) y el orden rojo-primero', async () => {
+  const { parseCube, identityLut, cubeText } = await import('../src/lut.js');
+  const txt = '# comentario\nTITLE "Mi look"\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\nLUT_3D_SIZE 2\n' +
+    '0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1 # fin\n';
+  const l = parseCube(txt);
+  assert.equal(l.size, 2); assert.equal(l.title, 'Mi look'); assert.equal(l.data.length, 32);
+  assert.deepEqual([...l.data.slice(4, 8)], [1, 0, 0, 1]); // el segundo nodo es rojo = 1
+  assert.deepEqual([...l.data.slice(16, 20)], [0, 0, 1, 1]); // el quinto, azul = 1
+  const id = identityLut(2);
+  assert.deepEqual([...l.data], [...id.data]);
+  const back = parseCube(cubeText(5, (r, g, b) => [b, g, r]));
+  assert.equal(back.size, 5);
+  // el segundo nodo tiene rojo de entrada 0.25; la función intercambia rojo y azul, así que sale en el canal azul
+  assert.ok(Math.abs(back.data[4] - 0) < 1e-5 && Math.abs(back.data[4 + 2] - 0.25) < 1e-5);
+});
+
+test('LUT .cube: rechaza archivos que no sirven con mensajes claros', async () => {
+  const { parseCube, MAX_LUT_SIZE } = await import('../src/lut.js');
+  assert.throws(() => parseCube(''), /vacío/);
+  assert.throws(() => parseCube('hola'), /no es un archivo .cube/i);
+  assert.throws(() => parseCube('LUT_1D_SIZE 4\n0 0 0\n'), /1D/);
+  assert.throws(() => parseCube('LUT_3D_SIZE 2\n0 0 0\n'), /Faltan datos/);
+  assert.throws(() => parseCube('LUT_3D_SIZE 1\n0 0 0'), /no válido/);
+  assert.throws(() => parseCube(`LUT_3D_SIZE ${MAX_LUT_SIZE + 1}`), /demasiado grande/);
+  assert.throws(() => parseCube('LUT_3D_SIZE 2\n' + '0 0 0\n'.repeat(9)), /más filas/);
+  assert.throws(() => parseCube('LUT_3D_SIZE 2\n0 0 x\n'), /no numérico/);
+  assert.throws(() => parseCube('0 0 0\n'), /LUT_3D_SIZE/);
+  assert.throws(() => parseCube('LUT_3D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n' + '0 0 0\n'.repeat(8)), /DOMAIN/);
+});
+
+test('look en las ediciones: por defecto vacío, se sanea y cuenta para la neutralidad', () => {
+  assert.deepEqual(defaultEdits().look, { id: null, name: '', intensity: 100 });
+  const e = defaultEdits(); e.look = { id: 'abc', name: 'Calido', intensity: 80 };
+  assert.equal(isNeutral(e), false);
+  e.look.intensity = 0; assert.equal(isNeutral(e), true, 'con intensidad 0 no hace nada');
+  const m = migrate({ look: { id: 12, name: 'x', intensity: 999 } });
+  assert.equal(m.look.id, null); assert.equal(m.look.intensity, 100);
+  assert.equal(migrate({ look: { id: 'k', name: 'n', intensity: -5 } }).look.intensity, 0);
+  assert.deepEqual(migrate({}).look, { id: null, name: '', intensity: 100 });
+});

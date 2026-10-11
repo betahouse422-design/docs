@@ -48,6 +48,7 @@ precision highp int;
 
 uniform sampler2D u_src;   // origen, lineal, con mipmaps
 uniform sampler2D u_blur;  // origen muy desenfocado (para claridad)
+uniform highp sampler3D u_look; // LUT 3D (.cube)
 uniform sampler2D u_brush; // pincel de máscaras: canal i = máscara activa i
 uniform sampler2D u_lut;   // 256x8: filas master, r, g, b, tono, sat, lum (valor en .r)
 
@@ -77,6 +78,9 @@ uniform int u_hslOn;
 uniform vec3 u_hsl[8];
 uniform int u_curvesOn;
 uniform int u_hslCurvesOn;
+uniform float u_lookAmt;     // 0 = sin look
+uniform vec3 u_lookMin, u_lookMax;
+uniform float u_lookSize;
 uniform int u_gradOn;
 uniform vec4 u_gradS, u_gradM, u_gradH; // hue(grados), sat(0..1), -, -
 uniform float u_balance;
@@ -420,6 +424,13 @@ void main() {
     vec3 tH = hsl2rgb(vec3(u_gradH.x / 360.0, 1.0, 0.5)) - 0.5;
     d += (tS * u_gradS.y * wS + tM * u_gradM.y * wM + tH * u_gradH.y * wH) * 0.4;
     d = clamp(d, 0.0, 1.0);
+  }
+
+  // look (LUT 3D): se aplica sobre el color ya corregido, en espacio de visualización
+  if (u_lookAmt > 0.0) {
+    vec3 lc = clamp((d - u_lookMin) / (u_lookMax - u_lookMin), 0.0, 1.0);
+    lc = lc * ((u_lookSize - 1.0) / u_lookSize) + 0.5 / u_lookSize; // centro de texel
+    d = mix(d, clamp(texture(u_look, lc).rgb, 0.0, 1.0), u_lookAmt);
   }
 
   // ajustes locales (máscaras)

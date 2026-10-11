@@ -45,6 +45,7 @@ export function defaultEdits() {
     detail: { clarity: 0, sharpness: 0, texture: 0, dehaze: 0, denoise: 0, colorDenoise: 0 },
     effects: { vignette: 0, grain: 0, grainSize: 30, fade: 0, bloom: 0, halation: 0 },
     geometry: { crop: { x: 0, y: 0, w: 1, h: 1 }, rotate90: 0, straighten: 0, flipH: false, flipV: false },
+    look: { id: null, name: '', intensity: 100 }, // LUT 3D (.cube): el archivo se guarda aparte, aquí solo su id
     masks: [],
     spots: [],
   };
@@ -147,6 +148,10 @@ export function gradingActive(edits) {
   return g.shadows.sat !== 0 || g.mids.sat !== 0 || g.highlights.sat !== 0;
 }
 
+export function lookActive(edits) {
+  return !!(edits.look && edits.look.id) && edits.look.intensity !== 0;
+}
+
 export function geometryActive(edits) {
   const g = edits.geometry;
   return g.rotate90 !== 0 || g.straighten !== 0 || g.flipH || g.flipV ||
@@ -162,7 +167,7 @@ export function isNeutral(edits) {
       if (getPath(edits, s.path) !== getPath(d, s.path)) return false;
     }
   }
-  return !curvesActive(edits) && !hslCurvesActive(edits) && !hslActive(edits) && !gradingActive(edits) &&
+  return !curvesActive(edits) && !hslCurvesActive(edits) && !hslActive(edits) && !gradingActive(edits) && !lookActive(edits) &&
     !geometryActive(edits) && edits.masks.length === 0 && (edits.spots || []).length === 0;
 }
 
@@ -182,6 +187,7 @@ export function migrate(raw) {
     const pts = raw.curves && raw.curves[c];
     out.curves[c] = Array.isArray(pts) && pts.length >= 2 ? sanitizeCurve(pts) : identityCurve();
   }
+  out.look = normalizeLook(raw.look);
   for (const c of HSL_CURVES) {
     const pts = raw.hslCurves && raw.hslCurves[c];
     out.hslCurves[c] = Array.isArray(pts) && pts.length >= 2 ? wrapCurve(sanitizeCurve(pts)) : flatCurve();
@@ -193,7 +199,7 @@ function mergeInto(base, src) {
   if (typeof base !== 'object' || base === null || Array.isArray(base)) return src === undefined ? base : src;
   const out = Array.isArray(base) ? base.slice() : { ...base };
   for (const k of Object.keys(base)) {
-    if (k === 'masks' || k === 'curves' || k === 'hslCurves' || k === 'spots') continue;
+    if (k === 'masks' || k === 'curves' || k === 'hslCurves' || k === 'spots' || k === 'look') continue;
     if (src && src[k] !== undefined) {
       out[k] = typeof base[k] === 'object' && base[k] !== null && !Array.isArray(base[k])
         ? mergeInto(base[k], src[k])
@@ -214,6 +220,12 @@ function sanitizeCurve(pts) {
   out[0][0] = 0;
   out[out.length - 1][0] = 1;
   return out;
+}
+
+function normalizeLook(l) {
+  const id = l && typeof l.id === 'string' && l.id ? l.id.slice(0, 80) : null;
+  const i = Number(l && l.intensity);
+  return { id, name: id ? String((l && l.name) || '').slice(0, 80) : '', intensity: Number.isFinite(i) ? Math.min(100, Math.max(0, i)) : 100 };
 }
 
 // ---- Máscaras locales -----------------------------------------------------
@@ -300,6 +312,7 @@ export function applyPreset(current, preset, intensity = 1) {
     if (curveIsIdentity(p.curves[c]) || !curveIsIdentity(out.curves[c])) continue;
     out.curves[c] = p.curves[c].map(([x, y]) => [x, round(x + (y - x) * k, 5)]);
   }
+  if (p.look && p.look.id) out.look = { ...p.look, intensity: Math.round(p.look.intensity * k) };
   for (const c of HSL_CURVES) {
     if (curveIsFlat(p.hslCurves[c]) || !curveIsFlat(out.hslCurves[c])) continue;
     out.hslCurves[c] = p.hslCurves[c].map(([x, y]) => [x, round(0.5 + (y - 0.5) * k, 5)]);

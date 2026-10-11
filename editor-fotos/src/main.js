@@ -21,6 +21,7 @@ import {
   statusAfterEdit, toggleApproved, pasteEdits, nextToReview, neighbor, visibleAspect, cropForAspect,
 } from './workflow.js';
 import { createPrintUI } from './print-ui.js';
+import { parseCube, MAX_CUBE_BYTES } from './lut.js';
 import { newStroke, MAX_STROKES, MAX_STROKE_POINTS } from './brush.js';
 import { watermarkBlob, loadImageAsset } from './compose.js';
 import { LOGO_POSITIONS } from './layout.js';
@@ -31,7 +32,7 @@ const engine = new Engine(view);
 const store = new EditStore();
 const ui = {
   fileId: null, photoId: null, mode: 'edit', clip: null, loadToken: 0, fileName: 'foto', compare: false, cropMode: false, cropDraft: null, cropAspectId: 'free',
-  tab: 'adjust', brush: { r: 0.04, soft: 0.5, erase: false }, hslRange: 'red', selMask: -1, pick: null, spotTool: false, selSpot: -1, presetSession: null, userPresets: [], selPresetId: null,
+  tab: 'adjust', brush: { r: 0.04, soft: 0.5, erase: false }, looks: [], hslRange: 'red', selMask: -1, pick: null, spotTool: false, selSpot: -1, presetSession: null, userPresets: [], selPresetId: null,
   presetSource: 'starter', presetQuery: '', presetGroup: '', presetLimit: 60, packs: {}, packLoading: false,
   renderQueued: false, histTimer: 0, saveTimer: 0,
 };
@@ -52,6 +53,8 @@ function renderNow() {
   const w = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const h = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const lk = store.get().look;
+  if (lk.id && engine.lookId !== lk.id) ensureLook(engine, lk.id).then(requestRender); // se ve sin look un instante
   const res = engine.render(store.get(), {
     maxW: Math.max(64, w) * dpr, maxH: Math.max(64, h) * dpr, upscale: true,
     original: ui.compare, geometryEdit: ui.cropMode,
@@ -106,6 +109,7 @@ function buildAdjustTab() {
     if (g.id === 'color') root.append(buildHslSection());
   }
   root.append(buildGradingSection());
+  root.append(buildLookSection());
 }
 
 function buildHslSection() {
@@ -157,6 +161,84 @@ function buildGradingSection() {
     get: () => store.get().grading.balance, set: (v) => store.update((e) => { e.grading.balance = v; }), commit: () => store.commit() });
   d.append(bal.row); refreshers.push(bal.refresh);
   controls.__grading = { refresh: () => refreshers.forEach((f) => f()) };
+  return d;
+}
+
+
+// ---------- looks (LUT 3D .cube) ----------
+const lookCache = new Map(); // id -> LUT ya leída
+
+async function getLook(id) {
+  if (lookCache.has(id)) return lookCache.get(id);
+  const rec = await storage.getAsset(id);
+  if (!rec) return null;
+  const lut = parseCube(await rec.blob.text());
+  lookCache.set(id, lut);
+  return lut;
+}
+
+// Sube al motor la tabla del look que pide `id` (si todavía no la tiene). No lanza: sin look se ve la foto sin él.
+async function ensureLook(eng, id) {
+  if (!id || eng.lookId === id) return;
+  try { const lut = await getLook(id); if (lut) eng.setLook(id, lut); } catch (err) { console.error(err); }
+}
+
+async function importLooks(files) {
+  let ok = 0;
+  for (const f of files) {
+    try {
+      if (f.size > MAX_CUBE_BYTES) throw new Error('El archivo es demasiado grande para ser una LUT.');
+      const text = await f.text();
+      const lut = parseCube(text); // valida antes de guardar
+      const rec = { id: storage.newId('look'), kind: 'look', name: (lut.title || f.name.replace(/\.cube$/i, '')).slice(0, 80), file: f.name, blob: new Blob([text], { type: 'text/plain' }), createdAt: Date.now() };
+      await storage.putAsset(rec); lookCache.set(rec.id, lut); ok++;
+    } catch (err) { toast(`${f.name}: ${err.message}`, true); }
+  }
+  ui.looks = await storage.listAssets('look');
+  if (ok) toast(`${ok} look${ok === 1 ? '' : 's'} cargado${ok === 1 ? '' : 's'}`);
+  refreshLookSection();
+}
+
+function setLook(rec) {
+  store.update((e) => { e.look = rec ? { id: rec.id, name: rec.name, intensity: e.look.intensity === 0 ? 100 : (e.look.intensity ?? 100) } : { id: null, name: '', intensity: 100 }; });
+  store.commit();
+  if (rec) ensureLook(engine, rec.id).then(requestRender);
+  refreshLookSection();
+}
+
+let lookRefreshing = false;
+function refreshLookSection() {
+  const old = $('#lookSection');
+  if (!old || lookRefreshing) return;
+  lookRefreshing = true; // quitar un control con foco dispara "blur", que puede volver a confirmar y llegar aquí
+  try {
+    const fresh = buildLookSection();
+    if (old.open) fresh.open = true;
+    old.replaceWith(fresh);
+  } finally { lookRefreshing = false; }
+}
+
+function buildLookSection() {
+  const d = el('details', { id: 'lookSection', open: !!store.get().look.id }, el('summary', {}, 'Look (LUT 3D)'));
+  const cur = store.get().look;
+  ui.lookShown = cur.id;
+  const sel = el('select', { class: 'field', id: 'lookSelect', 'aria-label': 'Look' },
+    el('option', { value: '' }, ui.looks.length ? 'Sin look' : 'Aún no hay looks cargados'),
+    ...ui.looks.map((r) => el('option', { value: r.id, selected: r.id === cur.id }, r.name)));
+  sel.addEventListener('change', () => setLook(ui.looks.find((r) => r.id === sel.value) || null));
+  const load = el('button', { class: 'btn small', type: 'button', id: 'btnLoadLook', onClick: () => $('#fileLook').click() }, 'Cargar .cube…');
+  d.append(el('div', { class: 'row' }, sel), el('div', { class: 'row tools' }, load));
+  if (cur.id) {
+    const inten = sliderRow({ label: 'Intensidad del look', min: 0, max: 100, step: 1, neutral: 100,
+      get: () => store.get().look.intensity, set: (v) => store.update((e) => { e.look.intensity = v; }), commit: () => store.commit() });
+    d.append(inten.row);
+    d.append(el('button', { class: 'btn small danger', type: 'button', onClick: async () => {
+      if (!confirm(`¿Borrar el look "${cur.name}" de este dispositivo? Las fotos que lo usan se verán sin él.`)) return;
+      await storage.deleteAsset(cur.id); lookCache.delete(cur.id); ui.looks = await storage.listAssets('look');
+      setLook(null);
+    } }, 'Borrar este look'));
+  }
+  d.append(el('p', { class: 'hint' }, 'Un .cube es una tabla de color que otros fotógrafos comparten. Se aplica al final de tus ajustes. Solo LUT 3D (hasta 65³).'));
   return d;
 }
 
@@ -838,6 +920,7 @@ function syncControls() {
   if (curveEditor) curveEditor.setPoints(curvePoints(curveEditor.channel));
   if (ui.tab === 'masks') buildMasksTab();
   if (ui.tab === 'retouch') buildRetouchTab();
+  if (store.get().look.id !== ui.lookShown) refreshLookSection();
 }
 
 function updateButtons() {
@@ -874,8 +957,9 @@ let workEngine = null; let workId = null;
 const getWorkEngine = () => { if (!workEngine) workEngine = new Engine(document.createElement('canvas')); return workEngine; };
 
 // Motor de trabajo (miniaturas, impresión) con la foto de `rec` cargada.
-async function loadWork(rec) {
+async function loadWork(rec, edits = rec.edits) {
   const we = getWorkEngine();
+  if (edits && edits.look && edits.look.id) await ensureLook(we, edits.look.id);
   if (workId === rec.id && we.hasSource()) return we;
   const bmp = await decodeBlob(rec.blob);
   we.setSource(bmp); if (bmp.close) bmp.close();
@@ -884,7 +968,7 @@ async function loadWork(rec) {
 }
 
 async function regenThumb(rec, edits) {
-  const we = await loadWork(rec);
+  const we = await loadWork(rec, edits);
   we.render(edits, { maxW: 240, maxH: 240, upscale: false });
   rec.thumb = await makeThumb(we.canvas, we.canvas.width, we.canvas.height);
 }
@@ -1120,6 +1204,10 @@ function wire() {
   $('#btnSample').addEventListener('click', sampleImage);
   fileInput.addEventListener('change', () => { openFiles(fileInput.files); fileInput.value = ''; });
 
+  $('#fileLook').addEventListener('change', async (ev) => {
+    const files = [...ev.target.files]; ev.target.value = '';
+    if (files.length) await importLooks(files);
+  });
   $('#filePresets').addEventListener('change', async (ev) => {
     const files = [...ev.target.files]; ev.target.value = '';
     if (files.length) await importPresetFiles(files);
@@ -1179,6 +1267,7 @@ async function init() {
   });
   wire(); updateButtons();
   try { ui.userPresets = await storage.listPresets(); buildPresetsTab(); } catch { /* sin presets propios */ }
+  try { ui.looks = await storage.listAssets('look'); refreshLookSection(); } catch { /* sin looks guardados */ }
   try {
     await lib.load();
     await printUI.init();

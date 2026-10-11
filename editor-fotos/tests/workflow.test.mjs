@@ -659,6 +659,50 @@ t('marca de agua al exportar una foto suelta: logo del restaurante en la esquina
   await ctx.close();
 });
 
+t('looks .cube: cargar, elegir, intensidad, se ve en la foto, sobrevive a recargar; archivos malos avisan', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#808080' }]);
+  const cube = (fn) => { const n = 5; const out = ['TITLE "Inversa"', `LUT_3D_SIZE ${n}`]; for (let b = 0; b < n; b++) for (let g = 0; g < n; g++) for (let r = 0; r < n; r++) out.push(fn(r / (n - 1), g / (n - 1), b / (n - 1)).map((v) => v.toFixed(5)).join(' ')); return out.join('\n'); };
+  const center = () => page.evaluate(() => { const { width, height, data } = window.__app.engine.readPixels(); const i = (Math.floor(height * 0.3) * width + Math.floor(width * 0.3)) * 4; return data[i]; });
+  await page.evaluate(() => window.__app.renderNow());
+  const before = await center();
+  await page.locator('#lookSection summary').click();
+  // un archivo que no es una LUT avisa y no se guarda
+  await page.locator('#fileLook').setInputFiles({ name: 'malo.cube', mimeType: 'text/plain', buffer: Buffer.from('esto no es una lut') });
+  await page.waitForSelector('#toast:not([hidden])');
+  assert.equal(await page.locator('#lookSelect option').count(), 1, 'solo "Aún no hay looks"');
+  // uno bueno
+  await page.locator('#fileLook').setInputFiles({ name: 'inversa.cube', mimeType: 'text/plain', buffer: Buffer.from(cube((r, g, b) => [1 - r, 1 - g, 1 - b])) });
+  await page.waitForFunction(() => document.querySelectorAll('#lookSelect option').length === 2);
+  await page.selectOption('#lookSelect', { label: 'Inversa' });
+  const id = await page.evaluate(() => window.__app.store.get().look.id);
+  assert.ok(id, 'el look queda en las ediciones');
+  await page.waitForFunction(() => window.__app.engine.lookId === window.__app.store.get().look.id);
+  await frame(page); await page.evaluate(() => window.__app.renderNow());
+  const after = await center();
+  assert.ok(Math.abs(after - (255 - before)) < 12, `con la inversa el gris claro se oscurece: ${before} -> ${after}`);
+  // intensidad 0 = foto sin look
+  await setSlider(page, 'Intensidad del look', 0, '#lookSection');
+  await page.evaluate(() => window.__app.renderNow());
+  assert.ok(Math.abs(await center() - before) < 4, 'intensidad 0');
+  await setSlider(page, 'Intensidad del look', 100, '#lookSection');
+  await shot(page, '22-look');
+  await waitStatus(page, 0, 'edited'); await settle(page);
+  // recargar: el look sigue elegido y la tabla se vuelve a cargar sola
+  await page.reload(); await page.waitForFunction(() => window.__appReady === true);
+  await page.waitForFunction(() => window.__app.engine.hasSource() && window.__app.store.get().look.id);
+  await page.waitForFunction(() => window.__app.engine.lookId === window.__app.store.get().look.id, null, { timeout: 15000 });
+  await page.evaluate(() => window.__app.renderNow());
+  assert.ok(Math.abs(await center() - after) < 6, 'tras recargar se ve igual');
+  assert.equal(await page.locator('#lookSelect').inputValue(), id);
+  // deshacer quita el look de la selección
+  await page.evaluate(() => window.__app.store.undo()); await page.evaluate(() => window.__app.store.undo()); await frame(page);
+  // quitar "Sin look"
+  await page.selectOption('#lookSelect', '');
+  assert.equal(await page.evaluate(() => window.__app.store.get().look.id), null);
+  await ctx.close();
+});
+
 t('teléfono: el modo Imprimir y la tira de fotos caben y se pueden usar con el dedo', async () => {
   const { page, ctx } = await newPage({ width: 390, height: 844 }, { touch: true });
   await openPhotos(page, [{}, { bg: '#30a050' }]);
