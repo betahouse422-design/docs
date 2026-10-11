@@ -561,10 +561,10 @@ export function createPrintUI(ctx) {
 
   function progress(msg) { const p = $('#printProgress'); if (p) p.textContent = msg; }
 
-  async function renderJob(label) {
+  async function renderJob(label, forcedIds = null) {
     await ctx.flush();
-    const ids = jobIds();
-    if (!ids.length) { toast('No hay fotos en el pedido. Aprueba alguna (o elige "Todas").', true); return null; }
+    const ids = forcedIds || jobIds();
+    if (!ids.length) { if (!forcedIds) toast('No hay fotos en el pedido. Aprueba alguna (o elige "Todas").', true); return null; }
     const sp = spec(); const perPage = sp.cols * sp.rows;
     const all = expandCopies(ids, sp.copies);
     const pages = []; for (let i = 0; i < all.length; i += perPage) pages.push(all.slice(i, i + perPage));
@@ -610,37 +610,44 @@ export function createPrintUI(ctx) {
     } catch (err) { console.error(err); toast('No se pudieron crear los JPEG', true); progress(''); } finally { S.busy = false; }
   }
 
+  // Manda hojas ya compuestas (JPEG con su tamaño de papel) al diálogo de impresión del navegador.
+  async function printPages(pages) {
+    const urls = pages.map((p) => URL.createObjectURL(new Blob([p.jpeg], { type: 'image/jpeg' })));
+    const sheet = $('#printSheet'); sheet.replaceChildren();
+    const style = el('style', {});
+    const sizes = new Map();
+    pages.forEach((p, i) => {
+      const key = `${p.widthMm.toFixed(1)}x${p.heightMm.toFixed(1)}`;
+      if (!sizes.has(key)) sizes.set(key, `pg${sizes.size}`);
+      const img = el('img', { src: urls[i], class: `pgimg ${sizes.get(key)}`, alt: `Hoja ${i + 1}` });
+      sheet.append(img);
+    });
+    let css = '@page { margin: 0; }\n';
+    for (const [key, cls] of sizes) { const [w, h] = key.split('x'); css += `@page ${cls} { size: ${w}mm ${h}mm; margin: 0; }\n.${cls} { page: ${cls}; width: ${w}mm; height: ${h}mm; }\n`; }
+    style.textContent = css; sheet.append(style);
+    await Promise.all([...sheet.querySelectorAll('img')].map((im) => im.decode().catch(() => {})));
+    const cleanup = () => { urls.forEach((u) => URL.revokeObjectURL(u)); sheet.replaceChildren(); window.removeEventListener('afterprint', cleanup); };
+    window.addEventListener('afterprint', cleanup);
+    document.body.classList.add('printing');
+    window.print();
+    document.body.classList.remove('printing');
+    if (sizes.size > 1) toast('Hay hojas de distinto tamaño: si sale mal, usa el PDF.', true);
+  }
+
   async function printNow() {
     if (S.busy) return; S.busy = true;
     try {
       const pages = await renderJob('Imprimir');
       if (!pages) return;
-      const urls = pages.map((p) => URL.createObjectURL(new Blob([p.jpeg], { type: 'image/jpeg' })));
-      const sheet = $('#printSheet'); sheet.replaceChildren();
-      const style = el('style', {});
-      const sizes = new Map();
-      pages.forEach((p, i) => {
-        const key = `${p.widthMm.toFixed(1)}x${p.heightMm.toFixed(1)}`;
-        if (!sizes.has(key)) sizes.set(key, `pg${sizes.size}`);
-        const img = el('img', { src: urls[i], class: `pgimg ${sizes.get(key)}`, alt: `Hoja ${i + 1}` });
-        sheet.append(img);
-      });
-      let css = '@page { margin: 0; }\n';
-      for (const [key, cls] of sizes) { const [w, h] = key.split('x'); css += `@page ${cls} { size: ${w}mm ${h}mm; margin: 0; }\n.${cls} { page: ${cls}; width: ${w}mm; height: ${h}mm; }\n`; }
-      style.textContent = css; sheet.append(style);
-      await Promise.all([...sheet.querySelectorAll('img')].map((im) => im.decode().catch(() => {})));
-      const cleanup = () => { urls.forEach((u) => URL.revokeObjectURL(u)); sheet.replaceChildren(); window.removeEventListener('afterprint', cleanup); };
-      window.addEventListener('afterprint', cleanup);
-      document.body.classList.add('printing');
-      window.print();
-      document.body.classList.remove('printing');
-      if (sizes.size > 1) toast('Hay hojas de distinto tamaño: si sale mal, usa el PDF.', true);
+      await printPages(pages);
     } catch (err) { console.error(err); toast('No se pudo preparar la impresión', true); progress(''); } finally { S.busy = false; }
   }
 
   return {
     init, build, schedulePreview, getWindowAspect, windowAspectFor, getSpec: () => (S.brand ? spec() : defaultPrintSpec()),
     getFrameAsset: currentFrameAsset, exportPdf, exportJpegs, printNow, updateSummary,
+    renderPagesFor: (ids, label) => renderJob(label, ids), printPages, selectBrand,
+    pdfBytes: (pages, title) => buildPdf(pages, { title: `${S.brand.name} — ${title}`, icc: pages[0].icc }),
     setCropAllHandler: (fn) => { onCropAll = fn; },
     state: S,
   };

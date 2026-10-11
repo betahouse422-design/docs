@@ -21,6 +21,7 @@ import {
   statusAfterEdit, toggleApproved, pasteEdits, nextToReview, neighbor, visibleAspect, cropForAspect,
 } from './workflow.js';
 import { createPrintUI } from './print-ui.js';
+import { createAutoUI } from './auto-ui.js';
 import { parseCube, MAX_CUBE_BYTES } from './lut.js';
 import { isRawName, decodeRaw, rawToCanvas, canDecodeFull } from './raw.js';
 import { newStroke, MAX_STROKES, MAX_STROKE_POINTS } from './brush.js';
@@ -1175,6 +1176,22 @@ async function importRaw(file, id, order) {
   };
 }
 
+// Importa UNA foto a la biblioteca (si ya estaba, no la repite). Devuelve su id. No cambia la foto que se está editando.
+async function importOne(file, order = Date.now()) {
+  const id = storage.fileKey(file);
+  if (await storage.getPhoto(id)) return id;
+  if (isRawName(file.name)) { await lib.put(await importRaw(file, id, order)); return id; }
+  const bmp = await decodeBlob(file);
+  const { w, h } = sizeOf(bmp);
+  const thumb = await makeThumb(bmp, w, h);
+  if (bmp.close) bmp.close();
+  await lib.put({
+    id, name: file.name.replace(/\.[^.]+$/, ''), blob: file, edits: defaultEdits(), status: 'pending', thumb,
+    addedAt: Date.now(), order, width: w, height: h, aspect: w / h,
+  });
+  return id;
+}
+
 async function openFiles(list) {
   const files = [...list].filter(isImageFile);
   if (!files.length) { toast('Ese archivo no es una imagen compatible', true); return; }
@@ -1182,28 +1199,15 @@ async function openFiles(list) {
   let firstId = null; let failed = 0; let lastError = '';
   for (const [i, file] of files.entries()) {
     try {
-      const id = storage.fileKey(file);
-      if (!(await storage.getPhoto(id))) {
-        if (isRawName(file.name)) {
-          if (files.length > 1) toast(`Revelando RAW ${i + 1} de ${files.length}…`);
-          await lib.put(await importRaw(file, id, Date.now() + i));
-        } else {
-          const bmp = await decodeBlob(file);
-          const { w, h } = sizeOf(bmp);
-          const thumb = await makeThumb(bmp, w, h);
-          if (bmp.close) bmp.close();
-          await lib.put({
-            id, name: file.name.replace(/\.[^.]+$/, ''), blob: file, edits: defaultEdits(), status: 'pending', thumb,
-            addedAt: Date.now(), order: Date.now() + i, width: w, height: h, aspect: w / h,
-          });
-        }
-      }
+      if (isRawName(file.name) && files.length > 1) toast(`Revelando RAW ${i + 1} de ${files.length}…`);
+      const id = await importOne(file, Date.now() + i);
       firstId = firstId || id;
     } catch (err) { failed++; lastError = err.message || ''; console.error(err); }
   }
   if (failed) toast(isRawName(files[0].name) && lastError ? lastError : `${failed} archivo(s) no se pudieron abrir. Si son HEIC, tu navegador puede no soportarlos.`, true);
   if (firstId) await selectPhoto(firstId);
 }
+
 const openFile = (file) => (file ? openFiles([file]) : undefined);
 
 async function selectPhoto(id) {
@@ -1308,14 +1312,19 @@ async function sampleImage() {
 }
 
 // ---------- modo Editar / Imprimir ----------
+let autoUI = null;
 let printUI = null;
 function setMode(mode) {
+  if (ui.autoRunning && mode !== 'auto') { toast('Detén el modo automático para editar o imprimir a mano', true); return; }
   ui.mode = mode;
   document.body.dataset.mode = mode;
   document.querySelectorAll('#modeSwitch button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
   if (mode === 'print') {
     if (ui.cropMode) endCrop(false);
     saveCurrent().then(() => { printUI.build(); printUI.schedulePreview(); });
+  } else if (mode === 'auto') {
+    if (ui.cropMode) endCrop(false);
+    saveCurrent().then(() => autoUI.build());
   } else { requestRender(); }
   updateOverlayMode(); updateButtons();
 }
@@ -1387,6 +1396,47 @@ async function doExport() {
   toast(`Guardado ${filename} (${width}×${height})`);
 }
 
+
+// ---------- modo automático ----------
+// Aplica a una foto recién llegada: tono/balance automáticos, el preset elegido y el encuadre del marco.
+async function autoProcessRec(id, o) {
+  const rec = await storage.getPhoto(id);
+  if (!rec) throw new Error('La foto ya no está en la biblioteca');
+  if (o.approveOnly) { rec.status = 'approved'; await lib.put(rec); return; }
+  let e = clone(rec.edits);
+  if (o.autoTone || o.autoWb) {
+    const we = await loadWork(rec, e);
+    we.render(e, { maxW: 500, maxH: 500, original: true, upscale: false });
+    const px = we.readPixels();
+    if (o.autoTone && !rec.isRaw) e = applyAutoTone(e, autoToneFromHistogram(lumaHistogram(px.data))); // un RAW ya parte de un revelado base
+    if (o.autoWb) {
+      const gw = grayWorldLinear(px.data, px.width, px.height);
+      const wb = gw ? whiteBalanceFromLinear(gw.r, gw.g, gw.b) : null;
+      if (wb) { e.color.temperature = wb.temperature; e.color.tint = wb.tint; }
+    }
+  }
+  if (o.preset) e = applyPreset(e, o.preset.edits, o.intensity);
+  if (o.cropToFrame) e = cropForAspect(e, printUI.windowAspectFor(visibleAspect(e, rec.width, rec.height)), rec.width, rec.height);
+  rec.edits = e; rec.aspect = visibleAspect(e, rec.width, rec.height);
+  rec.status = o.approve ? 'approved' : statusAfterEdit(e);
+  try { await regenThumb(rec, e); } catch { /* sin miniatura nueva */ }
+  await lib.put(rec);
+}
+
+function autoCollections() {
+  return [
+    { id: 'starter', label: 'Arranque', load: async () => STARTER_PRESETS },
+    { id: 'mine', label: 'Mis presets', load: async () => { try { ui.userPresets = await storage.listPresets(); } catch { /* usa los de memoria */ } return ui.userPresets; } },
+    ...PACKS.map((p) => ({ id: p.id, label: p.label, load: async () => (await loadPack(p.id)).presets })),
+  ];
+}
+
+function setAutoRunning(on) {
+  document.body.classList.toggle('auto-running', !!on);
+  ui.autoRunning = !!on;
+  updateButtons();
+}
+
 // ---------- eventos ----------
 function wire() {
   const fileInput = $('#file');
@@ -1395,6 +1445,7 @@ function wire() {
   $('#btnSample').addEventListener('click', sampleImage);
   fileInput.addEventListener('change', () => { openFiles(fileInput.files); fileInput.value = ''; });
 
+  $('#fileAutoTest').addEventListener('change', (ev) => { const f = ev.target.files[0]; ev.target.value = ''; autoUI.testWith(f); });
   $('#fileLook').addEventListener('change', async (ev) => {
     const files = [...ev.target.files]; ev.target.value = '';
     if (files.length) await importLooks(files);
@@ -1460,12 +1511,17 @@ async function init() {
     const n = await batchUpdate(ids, (e, rec) => cropForAspect(e, aspectFor(visibleAspect(e, rec.width, rec.height)), rec.width, rec.height));
     toast(n ? `Recorte ajustado al marco en ${n} foto${n === 1 ? '' : 's'}` : 'Ya estaban recortadas a la forma del marco');
   });
+  autoUI = createAutoUI({
+    lib, toast, printUI, isPhotoName: (n) => isImageFile({ name: n, type: '' }), importFile: importOne, collections: autoCollections,
+    processRec: autoProcessRec, setRunning: setAutoRunning, goToPrint: () => setMode('print'),
+  });
   wire(); updateButtons();
   try { ui.userPresets = await storage.listPresets(); buildPresetsTab(); } catch { /* sin presets propios */ }
   try { ui.looks = await storage.listAssets('look'); refreshLookSection(); } catch { /* sin looks guardados */ }
   try {
     await lib.load();
     await printUI.init();
+    await autoUI.init();
     if (lib.items.length) {
       const last = await storage.kvGet('lastPhoto');
       await selectPhoto(lib.get(last) ? last : lib.items[0].id);
@@ -1475,7 +1531,7 @@ async function init() {
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost') && !location.search.includes('nosw')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  window.__app = { engine, store, ui, lib, sampleImage, openFile, openFiles, selectPhoto, requestRender, renderNow, setMode, printUI, batchUpdate, saveCurrent };
+  window.__app = { engine, store, ui, lib, sampleImage, openFile, openFiles, selectPhoto, requestRender, renderNow, setMode, printUI, autoUI, batchUpdate, saveCurrent };
   window.__appReady = true;
 }
 init();

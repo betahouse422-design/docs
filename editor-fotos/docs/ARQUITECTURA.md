@@ -26,6 +26,8 @@ main.js ──► store.js ──► model.js ◄── curves.js, geometry.js  
 | `workflow.js` | Estados de las fotos, copiar/pegar ajustes, recorte al marco, avisos de resolución. Sin DOM. |
 | `auto.js` | Balance de blancos (inversa del shader), tono automático, origen automático para quitar manchas. Sin DOM. |
 | `pdf.js`, `zip.js` | Generadores propios de PDF (una imagen JPEG por página) y ZIP. Sin dependencias. |
+| `autoflow.js` | Lógica del modo automático sin DOM: vigilante de carpeta (espera a que el archivo termine de copiarse), cola con estados, nombres de salida. |
+| `auto-ui.js` | Panel y cola del modo automático: carpetas (File System Access), ejecución, aprobación, entrega a carpeta o impresora. |
 | `raw.js` | Revela RAW con LibRaw (copia en `vendor/libraw-wasm`): RGB lineal de 16 bits, conversión a half-float. |
 | `icc.js` | Genera perfiles sRGB/matriz ICC, los incrusta en JPEG y lee cabeceras. Sin DOM. |
 | `colorman.js` | Conversión sRGB → perfil de la imprenta y simulación de impresión con Little CMS (`vendor/lcms-wasm`). |
@@ -124,3 +126,9 @@ El balance de blancos de `auto.js` es la inversa exacta del modelo del shader. S
 - **RAW:** `decodeRaw` pide a LibRaw RGB lineal de 16 bits (curva `[1,1,0,0,0,0]`, sin autobrillo, `adjustMaximumThr: 0` para respetar el nivel de blanco de la cámara). `Engine.setSourceLinear` lo sube como textura RGBA16F por franjas (conversión a half-float con una tabla de 65 536 entradas) y genera mipmaps; el resto del shader no cambia porque el origen ya es lineal. Si la GPU no admite `EXT_color_buffer_float`, se baja a un canvas sRGB de 8 bits. Se edita a media resolución y se revela a tamaño completo bajo demanda (`ensureFullRaw`: zoom, exportar; el motor de trabajo lo hace al imprimir ≥ 200 ppp).
 - **Color de salida:** el canvas de la hoja se convierte con `convertCanvas` (franjas de ~1,5 Mpx) si hay perfil RGB activo; el perfil elegido o el sRGB generado se incrusta en el JPEG (`embedIccInJpeg` quita antes cualquier perfil que ya traiga, como el de Chrome) y en el PDF como `ICCBased`. Los resultados de conversión y de simulación coinciden con los de Pillow (Little CMS).
 - **Sangrado y marcas:** `composePage` agranda el lienzo (sangrado + hueco + marcas), rellena el fondo hasta el borde del sangrado, extiende las fotos si el margen es 0 y dibuja las marcas fuera del sangrado. La geometría devuelve `mediaMm`, `trimMm` y `bleedBoxMm`; el PDF los usa para MediaBox, TrimBox y BleedBox.
+
+## Modo automático
+
+- **Vigilancia:** `FolderWatcher` consulta la carpeta cada segundo (`FileSystemDirectoryHandle.values()`), y solo entrega un archivo cuando su tamaño y fecha llevan 1,5 s sin cambiar (la cámara terminó de copiarlo), en orden de fecha. Ignora ocultos, temporales (`.part`, `.crdownload`…) y sidecars. Las claves ya procesadas (`nombre|tamaño|fecha`) se guardan para no repetir tras reiniciar.
+- **Camino de cada foto:** `importOne` (JPEG o RAW) → `autoProcessRec` (tono/balance automáticos, `applyPreset`, encuadre a la ventana del marco, estado aprobada) → `printUI.renderPagesFor` (la misma composición que la pestaña Imprimir, con perfil de color, sangrado y marcas) → entrega: archivos en la carpeta de salida, `printPages` (diálogo de impresión) o espera de aprobación.
+- **Pruebas:** las carpetas de la cámara y de salida se simulan con el sistema de archivos privado del navegador (`navigator.storage.getDirectory()`), que usa la misma API que una carpeta real.

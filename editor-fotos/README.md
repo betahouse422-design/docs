@@ -13,6 +13,7 @@ Código propio (HTML, CSS, JavaScript y WebGL2), sin dependencias de ejecución.
 - **Varias fotos a la vez:** tira de miniaturas con estados (pendiente, editada, aprobada), copiar y pegar ajustes, aplicar un preset o el modo automático a todas.
 - **Impresión:** restaurantes con logo y configuración propia, papel y 300 ppp, varias por hoja, marcos generados y **marcos PNG cargables** (la ventana se detecta sola), logo movible, texto con variables, PDF, JPEG/ZIP y diálogo de impresión.
 - **Automáticos:** balance de blancos con gotero y automático, tono automático.
+- **Modo automático:** vigila la carpeta donde la cámara deja las fotos, les aplica el preset, las coloca en el marco con el logo y las manda a imprimir o a una carpeta de impresión. Ver `docs/FLUJO_AUTOMATICO.md`.
 - **RAW** (LibRaw, revelado lineal de 16 bits) y **color para imprenta**: perfiles ICC (conversión y simulación con Little CMS), perfil sRGB incrustado en JPEG/PDF, sangrado y marcas de corte.
 - **Curvas por tono** (Tono→Tono, Tono→Sat., Tono→Lum.), **looks LUT 3D** (`.cube`) y **zoom** hasta ×16 con 1:1.
 - **Máscaras:** degradado, radial y **pincel** con goma.

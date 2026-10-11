@@ -1090,3 +1090,74 @@ test('printspec: sangrado, marcas y perfil de color se sanean y migran', async (
   assert.deepEqual(migratePrintSpec(migratePrintSpec(m)), m, 'idempotente');
   assert.deepEqual(migratePrintSpec({}).color, d.color, 'restaurantes guardados antes de existir el color');
 });
+
+test('flujo automático: nombres de la cámara vs. archivos que se ignoran', async () => {
+  const { isIncomingName } = await import('../src/autoflow.js');
+  const photo = (n) => /\.(jpe?g|png|arw|cr2|dng)$/i.test(n);
+  for (const ok of ['DSC00012.JPG', 'IMG_0001.CR2', 'plato 3.arw', 'foto.DNG']) assert.equal(isIncomingName(ok, photo), true, ok);
+  for (const no of ['.DS_Store', '._DSC00012.JPG', 'DSC00012.JPG.part', 'DSC.JPG.crdownload', 'foto.jpg~', 'Thumbs.db', 'notas.txt', 'DSC00012.xmp', '', 'archivo.pdf']) assert.equal(isIncomingName(no, photo), false, no);
+});
+
+test('FolderWatcher: espera a que el archivo termine de copiarse y entrega cada foto una sola vez, en orden', async () => {
+  const { FolderWatcher } = await import('../src/autoflow.js');
+  let t = 1000; let files = [];
+  const w = new FolderWatcher({ list: async () => files.map((f) => ({ ...f })), isPhotoName: (n) => /\.jpe?g$/i.test(n), settleMs: 1500, now: () => t });
+  await w.start({ includeExisting: false });
+  assert.deepEqual(await w.poll(), []);
+  files = [{ name: 'B.jpg', size: 100, mtime: 20 }, { name: 'A.jpg', size: 100, mtime: 10 }];
+  assert.deepEqual(await w.poll(), [], 'recién vista: aún no es estable'); t += 1000;
+  assert.deepEqual(await w.poll(), [], 'solo pasó 1 s'); t += 600;
+  assert.deepEqual((await w.poll()).map((f) => f.name), ['A.jpg', 'B.jpg'], 'estable: sale en orden de disparo (por fecha)');
+  t += 5000; assert.deepEqual(await w.poll(), [], 'no se repite');
+  // una foto que sigue creciendo (la cámara la está copiando) no sale hasta que se detiene
+  files.push({ name: 'C.jpg', size: 10, mtime: 30 }); await w.poll(); t += 1000;
+  files[2] = { name: 'C.jpg', size: 5000, mtime: 31 }; assert.deepEqual(await w.poll(), []); t += 1000;
+  files[2] = { name: 'C.jpg', size: 9000, mtime: 32 }; assert.deepEqual(await w.poll(), []); t += 1000;
+  assert.deepEqual(await w.poll(), [], 'cambió hace 1 s'); t += 800;
+  assert.deepEqual((await w.poll()).map((f) => `${f.name}:${f.size}`), ['C.jpg:9000']);
+  // archivos temporales y vacíos se ignoran
+  files.push({ name: 'D.jpg.part', size: 50, mtime: 40 }, { name: 'E.jpg', size: 0, mtime: 41 }); await w.poll(); t += 3000;
+  assert.deepEqual(await w.poll(), []);
+});
+
+test('FolderWatcher: las fotos que ya estaban al empezar se ignoran (o se incluyen si se pide); forget permite reintentar', async () => {
+  const { FolderWatcher } = await import('../src/autoflow.js');
+  let t = 0; const files = [{ name: 'vieja.jpg', size: 10, mtime: 1 }];
+  const mk = () => new FolderWatcher({ list: async () => files, isPhotoName: (n) => /\.jpg$/.test(n), settleMs: 100, now: () => t });
+  const a = mk(); await a.start({ includeExisting: false }); await a.poll(); t += 500;
+  assert.deepEqual(await a.poll(), [], 'la vieja no cuenta');
+  const b = mk(); await b.start({ includeExisting: true }); await b.poll(); t += 500;
+  assert.deepEqual((await b.poll()).map((f) => f.name), ['vieja.jpg'], 'con includeExisting sí');
+  const e = (await (async () => { t += 500; return []; })());
+  b.forget(files[0]); await b.poll(); t += 500;
+  assert.deepEqual((await b.poll()).map((f) => f.name), ['vieja.jpg'], 'tras forget vuelve a salir');
+  // recordar entre sesiones
+  const c = new FolderWatcher({ list: async () => files, isPhotoName: (n) => /\.jpg$/.test(n), settleMs: 100, now: () => t, known: b.knownKeys() });
+  await c.start({ includeExisting: true }); await c.poll(); t += 500;
+  assert.deepEqual(await c.poll(), [], 'las ya procesadas (guardadas) no se repiten');
+  // un archivo que desaparece deja de rastrearse
+  files.length = 0; await c.poll(); assert.equal(c.seen.size, 0);
+});
+
+test('AutoQueue: estados, conteos y límite que descarta primero lo ya terminado', async () => {
+  const { AutoQueue, STATES } = await import('../src/autoflow.js');
+  const q = new AutoQueue(3); let events = 0; q.on(() => events++);
+  const a = q.add({ name: 'a' }); const b = q.add({ name: 'b' }); q.add({ name: 'c' });
+  assert.equal(q.nextWaiting().name, 'a');
+  q.update(a.id, { status: 'done' }); q.update(b.id, { status: 'error', error: 'x' });
+  assert.deepEqual(q.counts(), { waiting: 1, importing: 0, processing: 0, review: 0, printing: 0, done: 1, discarded: 0, error: 1 });
+  q.add({ name: 'd' }); // pasa el límite: sale la primera terminada (a)
+  assert.deepEqual(q.items.map((x) => x.name), ['b', 'c', 'd']);
+  assert.equal(q.nextWaiting().name, 'c'); assert.ok(events >= 5);
+  q.clearFinished(); assert.deepEqual(q.items.map((x) => x.name), ['c', 'd']);
+  assert.ok(Object.values(STATES).every((s) => typeof s.label === 'string'));
+});
+
+test('flujo automático: nombre de salida ordenado y seguro; detección de carpeta', async () => {
+  const { outputName, folderAccessSupported } = await import('../src/autoflow.js');
+  const d = new Date(2026, 9, 11, 20, 30, 15);
+  assert.equal(outputName('Plato Fuerte Ñandú/1', 7, 'jpg', d), '20261011-203015_007_Plato_Fuerte_Nandu_1.jpg');
+  assert.equal(outputName('', 1, 'pdf', d), '20261011-203015_001_foto.pdf');
+  assert.equal(outputName('../../etc/passwd', 2, 'jpg', d), '20261011-203015_002_.._.._etc_passwd.jpg'.replace('.._.._', '.._.._'));
+  assert.equal(folderAccessSupported({}), false); assert.equal(folderAccessSupported({ showDirectoryPicker() {} }), true);
+});
