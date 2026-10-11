@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>harness</title>
+<link rel="icon" href="data:,">
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import { Engine } from '../src/engine.js';
+  import * as model from '../src/model.js';
+  window.__t = { Engine, model, engine: new Engine(document.getElementById('c')) };
+  window.__ready = true;
+</script>

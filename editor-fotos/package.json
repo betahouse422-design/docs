@@ -1,0 +1,18 @@
+{
+  "name": "editor-fotos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Editor de fotos personal (PWA, WebGL2). Diseño propio.",
+  "scripts": {
+    "serve": "node tests/serve.mjs 8080",
+    "test:unit": "node --test tests/unit.test.mjs",
+    "test:render": "node tests/render.test.mjs",
+    "test:ui": "node tests/ui.test.mjs",
+    "test": "npm run test:unit && npm run test:render && npm run test:ui",
+    "icons": "node tools/make-icons.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}

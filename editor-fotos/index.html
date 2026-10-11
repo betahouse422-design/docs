@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#101114">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Editor">
+  <meta name="description" content="Editor de fotos personal: se abre en el navegador y funciona sin conexión.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <title>Editor de fotos</title>
+</head>
+<body>
+  <div id="app">
+    <header class="bar">
+      <button id="btnOpen" class="btn primary"><span class="lg">Abrir foto</span><span class="sm">Abrir</span></button>
+      <div class="group">
+        <button id="btnUndo" class="btn icon" title="Deshacer (Ctrl+Z)" aria-label="Deshacer" disabled>↶</button>
+        <button id="btnRedo" class="btn icon" title="Rehacer (Ctrl+Mayús+Z)" aria-label="Rehacer" disabled>↷</button>
+      </div>
+      <button id="btnCompare" class="btn" title="Mantén pulsado para ver el original (tecla \)" disabled><span class="lg">Antes / después</span><span class="sm">Antes</span></button>
+      <button id="btnReset" class="btn" title="Restablecer todos los ajustes" aria-label="Restablecer" disabled><span class="lg">Restablecer</span><span class="sm">↺</span></button>
+      <span class="spacer"></span>
+      <button id="btnExport" class="btn primary" disabled>Exportar</button>
+    </header>
+
+    <main>
+      <section id="stage" aria-label="Vista de la foto">
+        <div id="empty">
+          <h1>Editor de fotos</h1>
+          <p>Abre una foto o arrástrala aquí.<br>Todo se procesa en tu dispositivo; nada se sube a ningún servidor.</p>
+          <div class="row">
+            <button id="btnOpen2" class="btn primary big">Abrir foto</button>
+            <button id="btnSample" class="btn big">Probar con una imagen de ejemplo</button>
+          </div>
+          <p class="hint">Formatos: JPEG, PNG, WebP (y HEIC en Safari).</p>
+        </div>
+        <div id="canvasWrap" hidden>
+          <canvas id="view"></canvas>
+          <canvas id="overlay"></canvas>
+          <div id="compareTag" hidden>Original</div>
+        </div>
+      </section>
+
+      <aside id="panel" aria-label="Ajustes">
+        <div class="histWrap">
+          <canvas id="hist" width="256" height="64"></canvas>
+          <div id="clipInfo" class="clipInfo"></div>
+        </div>
+        <nav id="tabs" role="tablist">
+          <button role="tab" data-tab="adjust" class="on">Ajustes</button>
+          <button role="tab" data-tab="curves">Curvas</button>
+          <button role="tab" data-tab="geometry">Recorte</button>
+          <button role="tab" data-tab="masks">Máscaras</button>
+          <button role="tab" data-tab="presets">Presets</button>
+        </nav>
+        <div id="tabBody">
+          <section data-tab="adjust" id="tabAdjust"></section>
+          <section data-tab="curves" id="tabCurves" hidden></section>
+          <section data-tab="geometry" id="tabGeometry" hidden></section>
+          <section data-tab="masks" id="tabMasks" hidden></section>
+          <section data-tab="presets" id="tabPresets" hidden></section>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <input id="file" type="file" accept="image/*" hidden>
+  <input id="fileJson" type="file" accept="application/json,.json" hidden>
+
+  <dialog id="exportDlg">
+    <form method="dialog">
+      <h2>Exportar</h2>
+      <label>Formato
+        <select id="expType">
+          <option value="image/jpeg">JPEG (ligero)</option>
+          <option value="image/png">PNG (sin pérdida)</option>
+          <option value="image/webp">WebP</option>
+        </select>
+      </label>
+      <label id="expQualityRow">Calidad <output id="expQualityOut">92</output>
+        <input id="expQuality" type="range" min="50" max="100" value="92">
+      </label>
+      <p id="expInfo" class="hint"></p>
+      <div class="row end">
+        <button value="cancel" class="btn">Cancelar</button>
+        <button id="expGo" value="go" class="btn primary">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
