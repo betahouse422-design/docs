@@ -1,5 +1,7 @@
 # Editor de fotos personal
 
+**Instalar y abrir en otra computadora:** `docs/INSTALACION.md` (o doble clic en `inicio/Iniciar-Mac.command` / `inicio/Iniciar-Windows.bat`).
+
 Pensado para fotografiar en restaurantes y entregar fotos impresas con marco y logo. Mira **`docs/GUIA_RESTAURANTE.md`** para el flujo completo.
 
 Editor de fotos que se abre en el navegador y se **instala como app** en Mac, iPhone, iPad y Android. Funciona sin conexión y todo se procesa en tu dispositivo: ninguna foto se sube a ningún servidor.
