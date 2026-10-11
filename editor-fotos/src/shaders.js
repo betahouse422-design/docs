@@ -15,6 +15,17 @@ void main() {
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }`;
 
+// Igual que VERT, pero con zoom: v_uv recorre solo la parte visible de la imagen (para ver detalle al 100 % o más).
+export const VERT_VIEW = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+uniform vec3 u_view; // zoom (>= 1), centro x, centro y (y hacia arriba)
+void main() {
+  vec2 uv = a_pos * 0.5 + 0.5;
+  v_uv = u_view.yz + (uv - 0.5) / max(u_view.x, 1.0);
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
 // Copia reducida del origen (el hardware elige el mipmap adecuado).
 export const DOWN_FRAG = `#version 300 es
 precision highp float;

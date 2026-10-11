@@ -15,6 +15,12 @@ Pestaña **Ajustes**:
 - **Reducción de ruido** (luminosidad y color): para fotos con poca luz. Se nota más al exportar a tamaño completo que en la pantalla.
 - **Quitar neblina, claridad, textura, nitidez**: detalle.
 
+**Zoom:** botones **− / Ajustar / + / 1:1** abajo a la derecha de la foto, las teclas **+ − 0**, la rueda del ratón (o pellizcar en el trackpad o con dos dedos) y doble clic. Para mover la foto acercada, arrástrala (en Retoque o gotero, mantén **Espacio** o usa el botón central). Con **1:1** ves un píxel de la foto por píxel de pantalla: sirve para revisar nitidez y manchas. En Recorte y en Máscaras el zoom se pausa.
+
+**Curvas por tono** (pestaña Curvas, a la derecha de RGB): *Tono→Tono* cambia un color hacia otro, *Tono→Sat.* sube o baja la saturación de un color y *Tono→Lum.* lo aclara u oscurece. El eje horizontal es el color; la línea central es "sin cambio". Los grises no se tocan.
+
+**Looks (LUT 3D `.cube`)** (Ajustes → Look): "Cargar .cube…" y elige uno; la intensidad lo mezcla con tu foto. Se aplica al final de tus ajustes. Los archivos se guardan en tu dispositivo. Solo LUT 3D, de hasta 65³.
+
 Pestaña **Máscaras**: ajustes solo en una zona. Hay degradado, radial y **pincel**: pulsa "+ Pincel", pinta sobre la foto la zona a cambiar (se ve en rojo) y mueve los deslizadores de exposición, color, etc. Con "Goma" quitas lo pintado. Si cambias el recorte después de pintar, repinta.
 
 Pestaña **Retoque**: toca una migaja o una mancha para quitarla. Arrastra el círculo punteado para elegir de dónde se copia la textura.
@@ -58,6 +64,5 @@ Salidas:
 - Sin RAW (solo formatos que abre el navegador: JPEG, PNG, WebP; HEIC en Safari).
 - Sin gestión de perfiles de color de impresora: se trabaja en sRGB. Para un color crítico, pide una prueba a la imprenta.
 - Sin sangrado ni marcas de corte para imprenta.
-- Sin máscaras con IA (cielo, piel, sujeto) ni LUT 3D (`.cube`).
+- Sin máscaras con IA (cielo, piel, sujeto).
 - Sin edición de metadatos ni integración directa con Apple Fotos (en el iPhone, "Abrir fotos" te deja elegirlas desde Fotos).
-- Sin zoom sobre la foto al editar.

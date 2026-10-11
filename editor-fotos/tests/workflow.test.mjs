@@ -616,7 +616,7 @@ t('marca de agua al exportar una foto suelta: logo del restaurante en la esquina
   await openPhotos(page, [{ bg: '#404040' }]);
   // sin logo guardado, la casilla está deshabilitada
   await page.click('#btnExport');
-  await page.waitForSelector('#exportDlg[open]');
+  await page.waitForSelector('#exportDlg[open][data-ready="1"]');
   assert.equal(await page.locator('#expWm').isDisabled(), true);
   await page.keyboard.press('Escape');
   // carga el logo en Imprimir
@@ -636,7 +636,7 @@ t('marca de agua al exportar una foto suelta: logo del restaurante en la esquina
     return n;
   }, { b64: buf.toString('base64'), region });
   const exportFile = async (setup) => {
-    await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open]');
+    await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open][data-ready="1"]');
     await setup();
     const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#expGo')]);
     return readFileSync(await dl.path());
@@ -653,7 +653,7 @@ t('marca de agua al exportar una foto suelta: logo del restaurante en la esquina
   assert.ok(inCorner > 100, `el logo debe verse abajo a la derecha (${inCorner})`);
   assert.equal(elsewhere, 0, 'y no en otra esquina');
   // la elección se recuerda
-  await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open]');
+  await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open][data-ready="1"]');
   assert.equal(await page.locator('#expWm').isChecked(), true);
   assert.equal(await page.locator('#expWmPos').inputValue(), 'bottom-right');
   await ctx.close();
@@ -700,6 +700,74 @@ t('looks .cube: cargar, elegir, intensidad, se ve en la foto, sobrevive a recarg
   // quitar "Sin look"
   await page.selectOption('#lookSelect', '');
   assert.equal(await page.evaluate(() => window.__app.store.get().look.id), null);
+  await ctx.close();
+});
+
+t('zoom: botones, teclado, rueda, arrastrar para mover, 1:1 y se suspende en recorte y máscaras', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ w: 1600, h: 1000 }]);
+  const z = () => page.evaluate(() => ({ ...window.__app.ui.zoom }));
+  const label = () => page.locator('#zoomLabel').innerText();
+  assert.equal(await page.locator('#zoomBar').isVisible(), true);
+  assert.equal(await label(), 'Ajustar'); assert.equal(await page.locator('#zoomOut').isDisabled(), true);
+  await page.click('#zoomIn'); await frame(page);
+  assert.ok(Math.abs((await z()).z - 1.6) < 0.01); assert.equal(await label(), '×1.6');
+  await page.keyboard.press('+'); await frame(page);
+  assert.ok((await z()).z > 2.5);
+  await page.keyboard.press('-'); await page.keyboard.press('-'); await frame(page);
+  assert.ok((await z()).z < 1.1, 'vuelve a ajustar');
+  await page.keyboard.press('0'); assert.equal((await z()).z, 1);
+  // 1:1: un píxel de la foto por píxel de pantalla (la foto es mayor que la vista, así que debe acercar)
+  await page.click('#zoom100'); await frame(page);
+  const z1 = (await z()).z; assert.ok(z1 > 1.2, `1:1 acerca (${z1})`);
+  await page.click('#zoom100'); assert.equal((await z()).z, 1, 'otro clic vuelve a ajustar');
+  // rueda con Ctrl (como pellizcar en el trackpad): acerca bajo el cursor
+  const box = await page.locator('#view').boundingBox();
+  await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.2);
+  await page.keyboard.down('Control'); await page.mouse.wheel(0, -300); await page.keyboard.up('Control'); await frame(page);
+  const zw = await z(); assert.ok(zw.z > 1.2, 'la rueda acerca');
+  assert.ok(zw.cx > 0.5 && zw.cy < 0.5, `acerca hacia donde apunta el cursor (${zw.cx}, ${zw.cy})`);
+  // arrastrar mueve la foto
+  const c0 = await z();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5); await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.45, { steps: 5 }); await page.mouse.up(); await frame(page);
+  const c1 = await z();
+  assert.ok(c1.cx > c0.cx && c1.cy > c0.cy, `arrastrar a la izquierda/arriba muestra lo de la derecha/abajo (${c0.cx},${c0.cy}) -> (${c1.cx},${c1.cy})`);
+  // no se puede salir de la foto
+  for (let i = 0; i < 6; i++) { await page.mouse.move(box.x + box.width * 0.9, box.y + box.height * 0.9); await page.mouse.down(); await page.mouse.move(box.x + box.width * 0.05, box.y + box.height * 0.05, { steps: 3 }); await page.mouse.up(); }
+  const c2 = await z(); assert.ok(c2.cx <= 1 - 0.5 / c2.z + 1e-6 && c2.cy <= 1 - 0.5 / c2.z + 1e-6, 'se queda dentro de la foto');
+  await shot(page, '23-zoom');
+  // doble clic: vuelve a ajustar
+  await page.mouse.dblclick(box.x + box.width * 0.5, box.y + box.height * 0.5); await frame(page);
+  assert.equal((await z()).z, 1);
+  // en recorte y en máscaras se ve la foto entera y la barra se oculta
+  await page.click('#zoomIn'); await page.click('#tabs button[data-tab="geometry"]');
+  await page.locator('#tabGeometry button', { hasText: 'Recortar' }).first().click().catch(() => {});
+  await page.click('#tabs button[data-tab="masks"]'); await page.locator('#tabMasks button', { hasText: '+ Radial' }).click(); await frame(page);
+  assert.equal(await page.locator('#zoomBar').isHidden(), true, 'sin barra en máscaras');
+  assert.equal(await page.evaluate(() => window.__app.engine.lastSize[0] > 0), true);
+  await ctx.close();
+});
+
+t('zoom: el retoque funciona acercado (el punto tocado cae donde se ve) y cambiar de foto restablece el zoom', async () => {
+  const { page, ctx } = await newPage();
+  const buf = await drawPng(page, 800, 600, "g.fillStyle='rgb(150,120,90)'; g.fillRect(0,0,w,h); g.fillStyle='rgb(10,10,10)'; g.beginPath(); g.arc(w*0.5625,h*0.5,10,0,7); g.fill();");
+  await openBuffers(page, [['migaja.png', buf], ['otra.png', buf]]);
+  await page.click('#tabs button[data-tab="retouch"]'); await page.click('#btnSpotTool');
+  // acerca ×4 al centro y toca a 3/4 del ancho: en la imagen eso es 0.5 + 0.25/4 = 0.5625
+  await page.evaluate(() => { const a = window.__app; a.ui.zoom = { z: 4, cx: 0.5, cy: 0.5 }; a.requestRender(); });
+  await frame(page); await frame(page);
+  const before = await viewPx(page, 0.75, 0.5); assert.ok(before[0] < 60, `la migaja se ve al acercar: ${before}`);
+  const box = await page.locator('#overlay').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.75, box.y + box.height * 0.5);
+  await page.waitForFunction(() => window.__app.store.get().spots.length === 1);
+  const sp = await page.evaluate(() => window.__app.store.get().spots[0]);
+  assert.ok(Math.abs(sp.x - 0.5625) < 0.004 && Math.abs(sp.y - 0.5) < 0.004, `mancha en (${sp.x}, ${sp.y})`);
+  await frame(page); await frame(page);
+  const after = await viewPx(page, 0.75, 0.5); assert.ok(Math.abs(after[0] - 150) < 20, `la migaja desaparece: ${before} -> ${after}`);
+  // cambiar de foto restablece el zoom
+  await page.keyboard.press('ArrowRight'); await page.waitForFunction(() => window.__app.ui.photoId && window.__app.lib.currentId !== window.__app.lib.items[0].id);
+  assert.equal(await page.evaluate(() => window.__app.ui.zoom.z), 1);
   await ctx.close();
 });
 

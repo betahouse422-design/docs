@@ -1,7 +1,7 @@
 // Service worker: guarda la app para que abra sin conexión.
 // Estrategia: red primero para el HTML/JS (siempre la versión nueva si hay red)
 // y caché como respaldo. Sube VERSION al publicar cambios.
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = `editor-fotos-${VERSION}`;
 const ASSETS = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',

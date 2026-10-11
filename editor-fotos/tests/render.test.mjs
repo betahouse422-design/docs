@@ -577,6 +577,52 @@ t('look LUT 3D: la tabla se muestrea bien entre nodos (LUT chica con rampa)', as
   r.out.forEach((v, i) => near(v, r.base[i], 4, `punto ${i}`)); // con solo 2 nodos 0 y 1 la tabla equivale a la identidad
 });
 
+t('zoom: la vista muestra solo la parte pedida, a más detalle, y la exportación sigue completa', async () => {
+  const r = await run(() => {
+    __h.load(200, 200, 'quad'); // rojo | verde / azul | blanco
+    __h.render(__h.edits()); const full = [__h.px(0.25, 0.25), __h.px(0.75, 0.25), __h.px(0.25, 0.75), __h.px(0.75, 0.75)];
+    __h.render(__h.edits(), { view: { z: 2, cx: 0.25, cy: 0.25 } });
+    const zTL = [__h.px(0.1, 0.1), __h.px(0.9, 0.9)];                  // todo cae dentro del cuadrante rojo
+    __h.render(__h.edits(), { view: { z: 2, cx: 0.75, cy: 0.75 } });
+    const zBR = [__h.px(0.1, 0.1), __h.px(0.9, 0.9)];                   // cuadrante blanco
+    __h.render(__h.edits(), { view: { z: 4, cx: 0.5, cy: 0.5 } });      // en el centro se juntan los cuatro: la esquina superior izquierda de la vista es roja
+    const z4 = [__h.px(0.1, 0.1), __h.px(0.9, 0.1), __h.px(0.1, 0.9), __h.px(0.9, 0.9)];
+    __h.render(__h.edits(), { view: { z: 1, cx: 0.1, cy: 0.1 } });     // z=1 ignora el centro
+    const z1 = [__h.px(0.25, 0.25), __h.px(0.75, 0.75)];
+    return { full, zTL, zBR, z4, z1 };
+  });
+  assert.deepEqual(r.full, [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]);
+  r.zTL.forEach((p) => assert.deepEqual(p, [255, 0, 0])); r.zBR.forEach((p) => assert.deepEqual(p, [255, 255, 255]));
+  assert.deepEqual(r.z4, [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]);
+  assert.deepEqual(r.z1, [[255, 0, 0], [255, 255, 255]]);
+});
+
+t('zoom: el detalle fino se ve al acercar (el damero deja de promediarse a gris)', async () => {
+  const r = await run(() => {
+    __h.load(512, 512, 'detail'); // damero de 2 px: 128/150
+    __h.render(__h.edits(), { maxW: 128, maxH: 128 }); const fit = __h.std(0.2, 0.2, 0.8, 0.8).std;
+    __h.render(__h.edits(), { maxW: 128, maxH: 128, view: { z: 4, cx: 0.5, cy: 0.5 } }); const near4 = __h.std(0.2, 0.2, 0.8, 0.8).std;
+    return { fit, near4 };
+  });
+  assert.ok(r.near4 > r.fit * 2 + 1, `al acercar hay más detalle: ${r.near4} vs ${r.fit}`);
+});
+
+t('zoom: los ajustes locales (viñeta, máscara) siguen a la imagen, no a la pantalla', async () => {
+  const r = await run(() => {
+    __h.load(200, 200, 'gray');
+    const e = __h.edits(); e.effects.vignette = -100; __h.render(e);
+    const corner = __h.px(0.02, 0.02)[0]; const center = __h.px(0.5, 0.5)[0];
+    // acercando al centro, la vista no incluye las esquinas: no debe oscurecerse como si lo fueran
+    __h.render(e, { view: { z: 8, cx: 0.5, cy: 0.5 } }); const zc = [__h.px(0.02, 0.02)[0], __h.px(0.98, 0.98)[0]];
+    // acercando a la esquina arriba-izquierda, la esquina de la vista SÍ está oscura
+    __h.render(e, { view: { z: 8, cx: 0.0625, cy: 0.0625 } }); const zk = __h.px(0.02, 0.02)[0];
+    return { corner, center, zc, zk };
+  });
+  assert.ok(r.corner < r.center - 40, 'la viñeta oscurece la esquina');
+  r.zc.forEach((v) => assert.ok(v > r.center - 12, `en el centro ampliado no hay viñeta fuerte (${v})`));
+  assert.ok(r.zk < r.center - 30, `la esquina ampliada sigue oscura (${r.zk})`);
+});
+
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok   ${name}`); }
   catch (e) { console.log(`  FALLA ${name}\n        ${e.message.split('\n')[0]}`); process.exitCode = 1; }

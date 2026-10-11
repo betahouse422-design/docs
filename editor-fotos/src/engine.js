@@ -7,7 +7,7 @@
 //  - dibujar el resultado con la geometría (recorte, giro, enderezado).
 // Todo el procesado de color ocurre en un solo shader (ver shaders.js).
 
-import { VERT, DOWN_FRAG, BLUR_FRAG, MAIN_FRAG } from './shaders.js';
+import { VERT, VERT_VIEW, DOWN_FRAG, BLUR_FRAG, MAIN_FRAG } from './shaders.js';
 import { buildLUT, LUT_SIZE } from './curves.js';
 import { strokesToAlpha } from './brush.js';
 import {
@@ -28,7 +28,7 @@ export class Engine {
     this.maxTex = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), MAX_SOURCE_SIDE);
     this.maxRender = Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), 16384);
 
-    this.progMain = this._program(VERT, MAIN_FRAG);
+    this.progMain = this._program(VERT_VIEW, MAIN_FRAG);
     this.progDown = this._program(VERT, DOWN_FRAG);
     this.progBlur = this._program(VERT, BLUR_FRAG);
 
@@ -257,7 +257,8 @@ export class Engine {
 
   // ---------- dibujo ----------
 
-  // opts: { maxW, maxH, upscale, full, original, geometryEdit }
+  // opts: { maxW, maxH, upscale, full, original, geometryEdit, view: { z, cx, cy } }
+  //   view = zoom: z veces más cerca, centrado en (cx, cy) de la imagen recortada (0..1, origen arriba-izquierda)
   render(edits, opts = {}) {
     if (!this.srcTex) return null;
     const gl = this.gl;
@@ -313,9 +314,12 @@ export class Engine {
     gl.uniform1f(P.u('u_fit'), geo.fit);
     gl.uniform1i(P.u('u_rot'), ((e.geometry.rotate90 % 4) + 4) % 4);
     gl.uniform2f(P.u('u_flip'), e.geometry.flipH ? 1 : 0, e.geometry.flipV ? 1 : 0);
-    const lod = Math.min(this.maxLod, Math.max(0, Math.log2(Math.max(1, geo.cw / outW))));
+    const z = Math.max(1, Math.min(32, (opts.view && opts.view.z) || 1));
+    const vc = opts.view && z > 1 ? [opts.view.cx, opts.view.cy] : [0.5, 0.5];
+    gl.uniform3f(P.u('u_view'), z, vc[0], 1 - vc[1]);
+    const lod = Math.min(this.maxLod, Math.max(0, Math.log2(Math.max(1, geo.cw / (outW * z)))));
     gl.uniform1f(P.u('u_lod0'), lod);
-    gl.uniform1f(P.u('u_outLong'), Math.max(outW, outH));
+    gl.uniform1f(P.u('u_outLong'), Math.max(outW, outH) * z); // el grano se mide respecto a la imagen, no a la pantalla
     gl.uniform2f(P.u('u_outSize'), outW, outH);
 
     // ajustes globales

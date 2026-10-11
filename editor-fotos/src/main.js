@@ -32,7 +32,7 @@ const engine = new Engine(view);
 const store = new EditStore();
 const ui = {
   fileId: null, photoId: null, mode: 'edit', clip: null, loadToken: 0, fileName: 'foto', compare: false, cropMode: false, cropDraft: null, cropAspectId: 'free',
-  tab: 'adjust', brush: { r: 0.04, soft: 0.5, erase: false }, looks: [], hslRange: 'red', selMask: -1, pick: null, spotTool: false, selSpot: -1, presetSession: null, userPresets: [], selPresetId: null,
+  tab: 'adjust', brush: { r: 0.04, soft: 0.5, erase: false }, looks: [], zoom: { z: 1, cx: 0.5, cy: 0.5 }, hslRange: 'red', selMask: -1, pick: null, spotTool: false, selSpot: -1, presetSession: null, userPresets: [], selPresetId: null,
   presetSource: 'starter', presetQuery: '', presetGroup: '', presetLimit: 60, packs: {}, packLoading: false,
   renderQueued: false, histTimer: 0, saveTimer: 0,
 };
@@ -57,9 +57,11 @@ function renderNow() {
   if (lk.id && engine.lookId !== lk.id) ensureLook(engine, lk.id).then(requestRender); // se ve sin look un instante
   const res = engine.render(store.get(), {
     maxW: Math.max(64, w) * dpr, maxH: Math.max(64, h) * dpr, upscale: true,
-    original: ui.compare, geometryEdit: ui.cropMode,
+    original: ui.compare, geometryEdit: ui.cropMode, view: zoomActive() ? ui.zoom : null,
   });
   if (!res) return;
+  ui.lastRes = { w: res.width, h: res.height };
+  updateZoomBar();
   view.style.width = `${res.width / dpr}px`;
   view.style.height = `${res.height / dpr}px`;
   overlay.sync(res.width / dpr, res.height / dpr);
@@ -92,6 +94,120 @@ function pathSlider(spec) {
   });
   controls[spec.path] = c;
   return c.row;
+}
+
+
+// ---------- zoom de la vista ----------
+// ui.zoom = { z, cx, cy }: z veces más cerca, centrado en (cx, cy) de la imagen recortada (0..1, origen arriba-izquierda).
+// El recorte y las máscaras se editan siempre con la foto entera, así que ahí el zoom se suspende.
+const ZOOM_MAX = 16;
+const overlayModeNow = () => overlay.h.getMode();
+const zoomActive = () => ui.zoom.z > 1.0001 && !ui.cropMode && !(ui.tab === 'masks' && ui.selMask >= 0 && !!store.get().masks[ui.selMask]);
+function zoomMap() { const on = zoomActive(); return { z: on ? ui.zoom.z : 1, cx: on ? ui.zoom.cx : 0.5, cy: on ? ui.zoom.cy : 0.5 }; }
+const cropToView = (u, v) => { const m = zoomMap(); return [(u - m.cx) * m.z + 0.5, (v - m.cy) * m.z + 0.5]; };
+const viewToCrop = (x, y) => { const m = zoomMap(); return [(x - 0.5) / m.z + m.cx, (y - 0.5) / m.z + m.cy]; };
+
+function clampZoom() {
+  const zm = ui.zoom;
+  zm.z = Math.min(ZOOM_MAX, Math.max(1, zm.z));
+  const half = 0.5 / zm.z;
+  zm.cx = Math.min(1 - half, Math.max(half, zm.cx)); zm.cy = Math.min(1 - half, Math.max(half, zm.cy));
+  if (zm.z <= 1.0001) { zm.z = 1; zm.cx = 0.5; zm.cy = 0.5; }
+}
+// Cambia el zoom dejando fijo el punto de la imagen que está bajo (ax, ay) de la vista (0..1).
+function setZoom(z, ax = 0.5, ay = 0.5) {
+  const zm = ui.zoom; const [px, py] = viewToCrop(ax, ay);
+  const old = zm.z;
+  zm.z = z;
+  if (zm.z > 1.0001) { zm.cx = px - (ax - 0.5) / Math.min(ZOOM_MAX, Math.max(1, zm.z)); zm.cy = py - (ay - 0.5) / Math.min(ZOOM_MAX, Math.max(1, zm.z)); }
+  if (old <= 1.0001 && zm.z > 1.0001 && !zoomActive()) { /* en recorte o máscaras no se aplica */ }
+  clampZoom(); requestRender();
+}
+function panBy(dx, dy) { // en fracciones de la vista
+  if (!zoomActive()) return;
+  ui.zoom.cx -= dx / ui.zoom.z; ui.zoom.cy -= dy / ui.zoom.z;
+  clampZoom(); requestRender();
+}
+function zoom100() { // un píxel de la foto = un píxel de pantalla
+  if (!engine.hasSource() || !ui.lastRes) return;
+  const g = engine.geometryInfo(store.get(), false);
+  return Math.max(1, g.cw / ui.lastRes.w);
+}
+function updateZoomBar() {
+  const bar = $('#zoomBar'); const wrap = $('#canvasWrap');
+  const can = engine.hasSource() && !ui.cropMode && !(ui.tab === 'masks' && ui.selMask >= 0);
+  bar.hidden = !can;
+  wrap.classList.toggle('zoomed', zoomActive());
+  const z = ui.zoom.z;
+  $('#zoomLabel').textContent = z > 1.0001 ? `×${z < 10 ? z.toFixed(1) : Math.round(z)}` : 'Ajustar';
+  $('#zoomOut').disabled = z <= 1.0001;
+  $('#zoomIn').disabled = z >= ZOOM_MAX - 0.001;
+}
+function resetZoom() { ui.zoom = { z: 1, cx: 0.5, cy: 0.5 }; }
+
+function wireZoom() {
+  const wrap = $('#canvasWrap');
+  const rel = (e) => { const r = $('#view').getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+  $('#zoomIn').addEventListener('click', () => setZoom(ui.zoom.z * 1.6));
+  $('#zoomOut').addEventListener('click', () => setZoom(ui.zoom.z / 1.6));
+  $('#zoomLabel').addEventListener('click', () => { resetZoom(); requestRender(); });
+  $('#zoom100').addEventListener('click', () => { const z = zoom100(); if (z) setZoom(Math.abs(ui.zoom.z - z) < 0.02 ? 1 : z); });
+
+  wrap.addEventListener('wheel', (e) => {
+    if (!engine.hasSource() || ui.cropMode || (ui.tab === 'masks' && ui.selMask >= 0)) return;
+    e.preventDefault();
+    const k = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
+    const [ax, ay] = rel(e);
+    setZoom(ui.zoom.z * k, ax, ay);
+  }, { passive: false });
+
+  // Gestos con el puntero: pellizcar con dos dedos (zoom + mover), arrastrar para mover la foto
+  // (en modo normal, con el botón central o con la barra espaciadora pulsada).
+  const ptrs = new Map(); let g = null;
+  const pinch = () => { const [a, b] = [...ptrs.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; };
+  wrap.addEventListener('pointerdown', (e) => {
+    if (!engine.hasSource() || ui.cropMode || (ui.tab === 'masks' && ui.selMask >= 0) || e.target.closest('#zoomBar')) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2) { g = { kind: 'pinch', ...pinch(), z: ui.zoom.z }; e.stopPropagation(); return; }
+    const free = overlayModeNow() === 'none';
+    if ((free && e.button === 0 && zoomActive()) || e.button === 1 || ui.space) {
+      if (!zoomActive() && !(e.button === 1 || ui.space)) return;
+      g = { kind: 'pan', x: e.clientX, y: e.clientY };
+      e.stopPropagation(); e.preventDefault(); wrap.classList.add('panning');
+      try { wrap.setPointerCapture(e.pointerId); } catch { /* sigue funcionando */ }
+    }
+  }, true);
+  wrap.addEventListener('pointermove', (e) => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!g) return;
+    e.stopPropagation();
+    const r = $('#view').getBoundingClientRect();
+    if (g.kind === 'pinch' && ptrs.size >= 2) {
+      const now = pinch(); const ax = (now.x - r.left) / r.width; const ay = (now.y - r.top) / r.height;
+      const before = ui.zoom.z; setZoom(g.z * (now.d / g.d), ax, ay);
+      if (before > 1.0001 || ui.zoom.z > 1.0001) panBy((now.x - g.x) / r.width, (now.y - g.y) / r.height);
+      g.x = now.x; g.y = now.y;
+    } else if (g.kind === 'pan') {
+      panBy((e.clientX - g.x) / r.width, (e.clientY - g.y) / r.height); g.x = e.clientX; g.y = e.clientY;
+    }
+  }, true);
+  const end = (e) => {
+    ptrs.delete(e.pointerId);
+    if (g && (g.kind === 'pan' || ptrs.size < 2)) { g = null; wrap.classList.remove('panning'); }
+  };
+  wrap.addEventListener('pointerup', end, true); wrap.addEventListener('pointercancel', end, true);
+
+  wrap.addEventListener('dblclick', (e) => {
+    if (overlayModeNow() !== 'none' || !engine.hasSource()) return;
+    const [ax, ay] = rel(e);
+    if (zoomActive()) { resetZoom(); requestRender(); } else { const z = zoom100(); setZoom(Math.max(2, z || 2), ax, ay); }
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !/INPUT|SELECT|TEXTAREA|BUTTON/.test(e.target.tagName) && ui.mode === 'edit') { ui.space = true; if (zoomActive()) e.preventDefault(); }
+  });
+  window.addEventListener('keyup', (e) => { if (e.code === 'Space') ui.space = false; });
 }
 
 // ---------- pestaña Ajustes ----------
@@ -709,7 +825,8 @@ function startWbPicker() {
   $('#overlay').style.cursor = ui.pick ? 'crosshair' : 'default';
 }
 
-function pickWhiteBalance(u, v) {
+function pickWhiteBalance(vx, vy) {
+  const [u, v] = viewToCrop(vx, vy);
   const px = neutralPixels(700);
   const avg = averagePatchLinear(px.data, px.width, px.height, u * px.width, v * px.height, Math.max(2, Math.round(px.width / 180)));
   ui.pick = null; updateOverlayMode(); overlay.draw();
@@ -762,19 +879,28 @@ function cropGeo() {
   const g = store.get().geometry; const [ow, oh] = orientedSize();
   return { crop: g.crop, ow, oh };
 }
-function spotToView(sp) {
+function spotToCrop(sp) {
   const { crop, ow, oh } = cropGeo();
   return {
     cx: (sp.x - crop.x) / crop.w, cy: (sp.y - crop.y) / crop.h, rw: sp.r / crop.w, rh: (sp.r * ow) / (crop.h * oh),
     sx: (sp.x + sp.dx - crop.x) / crop.w, sy: (sp.y + sp.dy - crop.y) / crop.h, mode: sp.mode,
   };
 }
+// Lo mismo, pero en coordenadas de la vista (con el zoom aplicado)
+function spotToView(sp) {
+  const c = spotToCrop(sp); const { z } = zoomMap();
+  const [cx, cy] = cropToView(c.cx, c.cy); const [sx, sy] = cropToView(c.sx, c.sy);
+  return { cx, cy, sx, sy, rw: c.rw * z, rh: c.rh * z, mode: c.mode };
+}
 function spotsView() { return store.get().spots.map(spotToView); }
 
 function updateSpotView(i, patch, final) {
   const sp = store.get().spots[i];
   if (!sp) return;
-  const v = { ...spotToView(sp), ...patch };
+  const pv = { ...spotToView(sp), ...patch };
+  const { z } = zoomMap();
+  const [vcx, vcy] = viewToCrop(pv.cx, pv.cy); const [vsx, vsy] = viewToCrop(pv.sx, pv.sy);
+  const v = { cx: vcx, cy: vcy, sx: vsx, sy: vsy, rw: pv.rw / z };
   const { crop } = cropGeo();
   const c01 = (x) => Math.min(1, Math.max(0, x));
   store.update((e) => {
@@ -790,14 +916,15 @@ function autoSpotSource(i) {
   const sp = store.get().spots[i];
   if (!sp) return;
   const px = neutralPixels(700);
-  const v = spotToView(sp);
+  const v = spotToCrop(sp);
   const rpx = Math.max(3, v.rw * px.width);
   const s = chooseSpotSource(px.data, px.width, px.height, v.cx * px.width, v.cy * px.height, rpx);
   const { crop } = cropGeo();
   store.update((e) => { e.spots[i].dx = (s.dx / px.width) * crop.w; e.spots[i].dy = (s.dy / px.height) * crop.h; });
 }
 
-function addSpotView(u, v) {
+function addSpotView(vx, vy) {
+  const [u, v] = viewToCrop(vx, vy);
   const st = store.get();
   if (st.geometry.straighten !== 0) { toast('Pon el enderezado en 0° para usar el retoque', true); return; }
   if (st.spots.length >= MAX_SPOTS) { toast(`Máximo ${MAX_SPOTS} retoques por foto`, true); return; }
@@ -912,6 +1039,7 @@ const overlay = new Overlay($('#overlay'), {
 
 function updateOverlayMode() {
   $('#overlay').style.pointerEvents = overlay.active() ? 'auto' : 'none';
+  requestRender(); // el zoom se suspende en recorte y máscaras
 }
 
 // ---------- sincronizar la interfaz con el estado ----------
@@ -1028,7 +1156,7 @@ async function selectPhoto(id) {
   if (token !== ui.loadToken) { if (bmp.close) bmp.close(); return; } // el usuario ya eligió otra
   engine.setSource(bmp); if (bmp.close) bmp.close();
   ui.photoId = id; ui.fileId = id; ui.fileName = rec.name;
-  ui.cropMode = false; ui.cropDraft = null; ui.selMask = -1; ui.presetSession = null; ui.selPresetId = null; ui.pick = null; ui.spotTool = false; ui.selSpot = -1;
+  resetZoom(); ui.cropMode = false; ui.cropDraft = null; ui.selMask = -1; ui.presetSession = null; ui.selPresetId = null; ui.pick = null; ui.spotTool = false; ui.selSpot = -1;
   $('#empty').hidden = true; document.body.classList.add('has-photos');
   store.load(rec.edits);
   lib.setCurrent(id); storage.kvSet('lastPhoto', id);
@@ -1138,8 +1266,9 @@ function openExportDialog() {
   const scale = Math.min(1, engine.maxRender / Math.max(g.cw, g.ch));
   $('#expInfo').textContent = `Tamaño: ${Math.round(g.cw * scale)} × ${Math.round(g.ch * scale)} px`;
   $('#expQualityRow').hidden = $('#expType').value === 'image/png';
+  dlg.dataset.ready = '';
   dlg.showModal();
-  openWatermarkOptions().catch(() => { /* sin marca de agua si falla el almacenamiento */ });
+  openWatermarkOptions().catch(() => { /* sin marca de agua si falla el almacenamiento */ }).finally(() => { dlg.dataset.ready = '1'; });
 }
 
 // Marca de agua: usa el logo de un restaurante ya configurado en Imprimir.
@@ -1240,10 +1369,14 @@ function wire() {
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); }
     else if (e.key === 'Escape' && (ui.pick || ui.spotTool)) { ui.pick = null; ui.spotTool = false; updateOverlayMode(); overlay.draw(); if (ui.tab === 'retouch') buildRetouchTab(); }
     else if (e.key === '\\') setCompare(true);
+    else if (!mod && (e.key === '+' || e.key === '=') && engine.hasSource() && ui.mode === 'edit') setZoom(ui.zoom.z * 1.6);
+    else if (!mod && (e.key === '-' || e.key === '_') && engine.hasSource() && ui.mode === 'edit') setZoom(ui.zoom.z / 1.6);
+    else if (!mod && e.key === '0' && engine.hasSource() && ui.mode === 'edit') { resetZoom(); requestRender(); }
     else if (!mod && !e.altKey && e.key.toLowerCase() === 'a' && t.tagName !== 'INPUT') toggleApprove();
     else if (!mod && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && t.tagName !== 'INPUT' && ui.photoId) { const id = neighbor(lib.items, ui.photoId, e.key === 'ArrowRight' ? 1 : -1); if (id && id !== ui.photoId) selectPhoto(id); }
   });
   window.addEventListener('keyup', (e) => { if (e.key === '\\') setCompare(false); });
+  wireZoom();
 
   window.addEventListener('resize', requestRender);
   new ResizeObserver(() => { requestRender(); if (ui.mode === 'print') printUI.schedulePreview(); }).observe($('#viewport'));

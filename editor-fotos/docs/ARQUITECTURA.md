@@ -26,6 +26,7 @@ main.js ──► store.js ──► model.js ◄── curves.js, geometry.js  
 | `workflow.js` | Estados de las fotos, copiar/pegar ajustes, recorte al marco, avisos de resolución. Sin DOM. |
 | `auto.js` | Balance de blancos (inversa del shader), tono automático, origen automático para quitar manchas. Sin DOM. |
 | `pdf.js`, `zip.js` | Generadores propios de PDF (una imagen JPEG por página) y ZIP. Sin dependencias. |
+| `lut.js` | Lector de LUT 3D `.cube` (validado, con mensajes claros). Sin DOM. |
 | `brush.js` | Trazos del pincel de máscaras: limpieza y rasterizado a una imagen de transparencia (lo usan el motor y la capa interactiva). |
 | `compose.js` | Dibuja una hoja: marco, foto, logo, texto (Canvas 2D). |
 | `photos.js`, `print-ui.js` | Biblioteca de fotos con tira de miniaturas; panel y vista previa de impresión. |
@@ -77,7 +78,6 @@ IndexedDB local (`editor-fotos`): `edits` (por foto, clave `nombre|tamaño|fecha
 ## Límites conocidos
 
 - Un solo shader con muchas ramas: correcto y rápido en GPU reales; en pruebas con GPU simulada por CPU es lento.
-- Sin zoom ni desplazamiento sobre la foto (la vista siempre muestra la foto entera).
 - Sin sangrado ni marcas de corte en la impresión; sin perfiles de color de impresora (todo en sRGB).
 - Sin RAW: el navegador solo decodifica formatos de imagen normales (JPEG, PNG, WebP; HEIC en Safari).
 - Color: la imagen se trabaja en sRGB. Los perfiles anchos (Display P3) se convierten a sRGB al abrir.
@@ -109,3 +109,9 @@ El balance de blancos de `auto.js` es la inversa exacta del modelo del shader. S
 - **Pincel:** una máscara de tipo `brush` guarda trazos (puntos 0..1 y radio como fracción del ancho). El motor los rasteriza con Canvas 2D a una textura RGBA8 de ~1024 px; el canal *i* es la máscara activa *i*. Solo se vuelve a rasterizar cuando cambian los trazos o la proporción de la salida. Las coordenadas son las del recorte final, igual que las otras máscaras: si cambias el recorte, hay que repintar.
 - **Bloom y halation:** un solo paso de shader. Muestrea dos anillos de 12 puntos alrededor del píxel en un nivel grueso del mipmap y solo cuenta las zonas claras (umbral por muestra). Bloom mezcla con "screen"; halation suma un tinte rojo-naranja.
 - **Marca de agua:** `watermarkBlob` (en `compose.js`) pinta el logo sobre la foto exportada con la misma función que usa la hoja de impresión.
+
+## Zoom, looks y curvas por tono
+
+- **Zoom:** un vertex shader propio (`VERT_VIEW`) recorre solo la parte visible: `v_uv = centro + (uv − 0.5)/z`. Todo el fragment shader trabaja con ese `v_uv`, así que viñeta, máscaras, retoque y mipmaps siguen a la imagen sin cambios. El nivel del mipmap se calcula con el zoom y el tamaño del grano se mide respecto a la imagen. Solo la vista de pantalla pasa `view`; la exportación y la impresión nunca llevan zoom. Las herramientas que dibujan sobre la foto (retoque, gotero) convierten entre coordenadas de la vista y de la imagen con `cropToView` / `viewToCrop` en `main.js`. En Recorte y Máscaras el zoom se suspende.
+- **Looks:** el archivo `.cube` se guarda como recurso (`assets`, tipo `look`); las ediciones solo guardan su id, nombre e intensidad. Se sube como textura 3D RGBA16F y se muestrea con filtro lineal (interpolación trilineal). Cada motor (la vista y el de trabajo para miniaturas e impresión) carga la tabla que pide la foto antes de dibujar; si no la tiene, la foto se ve sin look en vez de fallar.
+- **Curvas por tono:** tres curvas con x = tono y y = 0.5 como "sin cambio", guardadas en `hslCurves`. Comparten la textura de tablas con las curvas de tono (filas 4 a 6 de 8). Los extremos 0° y 360° se mantienen iguales y los grises no se modifican.

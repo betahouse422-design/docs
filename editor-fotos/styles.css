@@ -173,3 +173,13 @@ select.field { appearance: auto; }
 }
 
 .row.tools { margin: 4px 0 6px; }
+
+/* zoom de la vista */
+#canvasWrap, #view { touch-action: none; }
+#zoomBar { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: rgba(0,0,0,.62); line-height: 1; z-index: 3; }
+#zoomBar[hidden] { display: none; }
+#zoomBar button { background: transparent; border: 0; color: #fff; font-size: 14px; min-width: 34px; min-height: 32px; padding: 0 8px; border-radius: 7px; }
+#zoomBar button:hover { background: rgba(255,255,255,.16); }
+#zoomBar button:disabled { opacity: .4; }
+#canvasWrap.zoomed #view { cursor: grab; }
+#canvasWrap.panning #view, #canvasWrap.panning #overlay { cursor: grabbing; }
