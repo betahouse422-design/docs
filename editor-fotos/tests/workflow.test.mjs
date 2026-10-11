@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { startServer } from './serve.mjs';
+import { makeDng, patchesColor } from './make-dng.mjs';
 
 const shotsDir = process.argv[2];
 if (shotsDir) mkdirSync(shotsDir, { recursive: true });
@@ -771,6 +772,89 @@ t('zoom: el retoque funciona acercado (el punto tocado cae donde se ve) y cambia
   await ctx.close();
 });
 
+t('RAW: abrir un DNG lo revela, marca RAW, parte de un revelado base, y se acerca/exporta a tamaño completo', async () => {
+  const { page, ctx } = await newPage();
+  const dng = makeDng({ width: 256, height: 128, color: patchesColor(256, 128), orientation: 6 }); // sensor 256×128 girado: queda vertical 128×256
+  await page.locator('#file').setInputFiles({ name: 'plato.dng', mimeType: 'image/x-adobe-dng', buffer: dng });
+  await page.waitForFunction(() => window.__app.lib.items.length === 1 && window.__app.ui.photoId && window.__app.engine.hasSource(), null, { timeout: 60000 });
+  await frame(page);
+  assert.equal(await page.locator('.thumb .rawtag').count(), 1, 'la miniatura lleva la etiqueta RAW');
+  const rec = await page.evaluate(async () => { const r = await (await import('/src/storage.js')).getPhoto(window.__app.ui.photoId); return { isRaw: r.isRaw, w: r.width, h: r.height, aspect: r.aspect, status: r.status, make: r.rawMeta && r.rawMeta.make, tone: JSON.stringify(r.edits.light) }; });
+  assert.equal(rec.isRaw, true); assert.equal(rec.status, 'pending'); assert.equal(rec.make, 'Prueba');
+  assert.ok(rec.aspect < 1, `la orientación EXIF lo deja vertical (aspecto ${rec.aspect})`);
+  assert.ok(rec.h > rec.w, 'tamaño completo estimado vertical');
+  // al abrir va a media resolución (la mitad de lado)
+  const sz = () => page.evaluate(() => ({ size: [...window.__app.engine.srcSize], full: window.__app.engine.srcFull }));
+  assert.deepEqual(await sz(), { size: [64, 128], full: false });
+  await shot(page, '24-raw');
+  // acercar el zoom revela todo el detalle
+  await page.click('#zoomIn');
+  await page.waitForFunction(() => window.__app.engine.srcFull === true, null, { timeout: 60000 });
+  assert.deepEqual((await sz()).size, [128, 256]);
+  await frame(page); await frame(page);
+  // exportar un JPEG sale a tamaño completo
+  await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open][data-ready="1"]');
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#expGo')]);
+  const buf = readFileSync(await dl.path());
+  const dims = await page.evaluate(async (b64) => { const bmp = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + b64)).blob()); return [bmp.width, bmp.height]; }, buf.toString('base64'));
+  assert.deepEqual(dims, [128, 256]);
+  await ctx.close();
+});
+
+t('RAW: al exportar sin haber acercado, se revela a tamaño completo antes; y un archivo que no es RAW avisa', async () => {
+  const { page, ctx } = await newPage();
+  await page.locator('#file').setInputFiles({ name: 'plato.dng', mimeType: 'image/x-adobe-dng', buffer: makeDng({ width: 256, height: 128, color: patchesColor(256, 128) }) });
+  await page.waitForFunction(() => window.__app.lib.items.length === 1 && window.__app.engine.hasSource(), null, { timeout: 60000 });
+  assert.equal(await page.evaluate(() => window.__app.engine.srcFull), false);
+  await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open][data-ready="1"]');
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#expGo')]);
+  const dims = await page.evaluate(async (b64) => { const bmp = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + b64)).blob()); return [bmp.width, bmp.height]; }, readFileSync(await dl.path()).toString('base64'));
+  assert.deepEqual(dims, [256, 128], 'salió a tamaño completo, no a la mitad');
+  // un archivo con extensión RAW pero contenido inválido: mensaje claro y la biblioteca no se rompe
+  await page.locator('#file').setInputFiles({ name: 'roto.nef', mimeType: 'application/octet-stream', buffer: Buffer.from('esto no es un RAW de verdad') });
+  await page.waitForFunction(() => /No se pudo revelar el RAW/.test(document.getElementById('toast').innerText), null, { timeout: 30000 });
+  assert.equal(await page.evaluate(() => window.__app.lib.items.length), 1, 'no se añadió');
+  await ctx.close();
+});
+
+t('RAW: imprimir con un RAW usa el tamaño completo en la exportación y la vista previa sigue funcionando', async () => {
+  const { page, ctx } = await newPage();
+  await page.locator('#file').setInputFiles({ name: 'plato.dng', mimeType: 'image/x-adobe-dng', buffer: makeDng({ width: 256, height: 128, color: patchesColor(256, 128) }) });
+  await page.waitForFunction(() => window.__app.lib.items.length === 1 && window.__app.engine.hasSource(), null, { timeout: 60000 });
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.locator('[data-job="all"] input').check();
+  await page.waitForTimeout(1500);
+  const hasPhoto = await page.evaluate(() => { const c = document.getElementById('printCanvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 120 && d[i + 1] < 90 && d[i + 2] < 90) n++; return n; });
+  assert.ok(hasPhoto > 200, `la vista previa muestra el parche rojo del RAW (${hasPhoto})`);
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#btnPdf')]);
+  assert.equal(readFileSync(await dl.path()).slice(0, 5).toString(), '%PDF-');
+  await ctx.close();
+});
+
+const REAL_RAW = process.env.RAW_SAMPLE || (existsSync(new URL('./_tmp_sony.ARW', import.meta.url)) ? new URL('./_tmp_sony.ARW', import.meta.url).pathname : '');
+if (REAL_RAW) t('RAW real de cámara (RAW_SAMPLE): abre, se ve razonable y exporta a tamaño completo', async () => {
+  const { page, ctx } = await newPage();
+  await page.locator('#file').setInputFiles(REAL_RAW);
+  await page.waitForFunction(() => window.__app.lib.items.length === 1 && window.__app.engine.hasSource(), null, { timeout: 120000 });
+  await frame(page);
+  const info = await page.evaluate(async () => {
+    const r = await (await import('/src/storage.js')).getPhoto(window.__app.ui.photoId);
+    const { width, height, data } = window.__app.engine.readPixels(); let sum = 0; let clip = 0; const n = width * height;
+    for (let i = 0; i < data.length; i += 4) { const l = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]; sum += l; if (l > 250) clip++; }
+    return { w: r.width, h: r.height, make: r.rawMeta.make, model: r.rawMeta.model, mean: sum / n, clip: clip / n, srcFull: window.__app.engine.srcFull, src: window.__app.engine.srcSize };
+  });
+  assert.ok(info.make && info.model, 'metadatos de cámara');
+  assert.ok(info.mean > 70 && info.mean < 200, `brillo medio razonable tras el revelado base (${info.mean.toFixed(0)})`);
+  assert.ok(info.clip < 0.15, `pocas luces quemadas (${(info.clip * 100).toFixed(1)}%)`);
+  assert.equal(info.srcFull, false);
+  await shot(page, '25-raw-real');
+  await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open][data-ready="1"]');
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 180000 }), page.click('#expGo')]);
+  const dims = await page.evaluate(async (b64) => { const bmp = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + b64)).blob()); return [bmp.width, bmp.height]; }, readFileSync(await dl.path()).toString('base64'));
+  assert.ok(dims[0] >= info.w * 0.97, `exportó a tamaño completo (${dims.join('×')} vs ${info.w}×${info.h})`);
+  await ctx.close();
+});
+
 t('teléfono: el modo Imprimir y la tira de fotos caben y se pueden usar con el dedo', async () => {
   const { page, ctx } = await newPage({ width: 390, height: 844 }, { touch: true });
   await openPhotos(page, [{}, { bg: '#30a050' }]);
@@ -788,11 +872,13 @@ t('teléfono: el modo Imprimir y la tira de fotos caben y se pueden usar con el 
   await ctx.close();
 });
 
+const only = process.env.ONLY ? new RegExp(process.env.ONLY, 'i') : null; // ONLY=RAW node tests/workflow.test.mjs : solo las pruebas cuyo nombre coincida
 for (const [name, fn] of tests) {
+  if (only && !only.test(name)) continue;
   try { await fn(); passed++; console.log(`  ok   ${name}`); }
   catch (e) { console.log(`  FALLA ${name}\n        ${String(e.message).split('\n').slice(0, 3).join('\n        ')}`); process.exitCode = 1; }
 }
-const real = [...new Set(errors)].filter((e) => !/favicon/.test(e));
+const real = [...new Set(errors)].filter((e) => !/favicon/.test(e) && !/No se pudo revelar el RAW \(vac/.test(e)); // el segundo es el error esperado de la prueba del RAW roto
 if (real.length) { console.log('\nErrores en la consola del navegador:\n' + real.join('\n')); process.exitCode = 1; }
 console.log(`\n${passed}/${tests.length} pruebas de flujo correctas`);
 await browser.close(); server.close();

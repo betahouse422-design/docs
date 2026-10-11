@@ -1060,3 +1060,20 @@ test('look en las ediciones: por defecto vacío, se sanea y cuenta para la neutr
   assert.equal(migrate({ look: { id: 'k', name: 'n', intensity: -5 } }).look.intensity, 0);
   assert.deepEqual(migrate({}).look, { id: null, name: '', intensity: 100 });
 });
+
+test('RAW: conversión a half-float y extensiones', async () => {
+  const { packRowsHalf, HALF_ONE, isRawName, RAW_EXTENSIONS } = await import('../src/raw.js');
+  const half = (h) => { const s = h & 0x8000 ? -1 : 1; const e = (h >> 10) & 0x1f; const m = h & 0x3ff; return e === 0 ? s * 2 ** -14 * (m / 1024) : s * 2 ** (e - 15) * (1 + m / 1024); };
+  const raw = { width: 3, height: 2, data: Uint16Array.from([0, 0, 0, 65535, 65535, 65535, 1, 100, 1000, 12000, 30000, 50000, 65535, 0, 32768, 7, 7, 7]) };
+  const out = new Uint16Array(3 * 2 * 4);
+  packRowsHalf(raw, 0, 2, out);
+  // la primera fila de la salida es la ÚLTIMA fila de la imagen (la textura tiene el origen abajo)
+  const expect = [...raw.data.slice(9, 18), ...raw.data.slice(0, 9)];
+  for (let p = 0; p < 6; p++) for (let c = 0; c < 3; c++) {
+    const want = expect[p * 3 + c] / 65535; const got = half(out[p * 4 + c]);
+    assert.ok(Math.abs(got - want) <= Math.max(1e-6, want * 1e-3), `valor ${expect[p * 3 + c]}: ${got} vs ${want}`);
+  }
+  for (let p = 0; p < 6; p++) assert.equal(out[p * 4 + 3], HALF_ONE);
+  assert.equal(isRawName('IMG_0001.CR2'), true); assert.equal(isRawName('foto.DNG'), true); assert.equal(isRawName('foto.jpg'), false);
+  assert.equal(isRawName('dng'), false); assert.ok(RAW_EXTENSIONS.includes('arw') && RAW_EXTENSIONS.includes('nef'));
+});

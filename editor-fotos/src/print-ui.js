@@ -30,7 +30,7 @@ const POSITIONS = [
   ['bottom-left', '↙'], ['bottom-center', '↓'], ['bottom-right', '↘'],
 ];
 
-// ctx: { lib, loadWork(rec) -> Engine con esa foto cargada, flush(), getCurrentId(), toast, sliderRow, download }
+// ctx: { lib, loadWork(rec, edits, { full }) -> Engine con esa foto cargada, flush(), getCurrentId(), toast, sliderRow, download }
 export function createPrintUI(ctx) {
   const { lib, toast, sliderRow, download } = ctx;
   const S = {
@@ -108,7 +108,8 @@ export function createPrintUI(ctx) {
   function getWindowAspect() { return windowAspectFor(1.5); }
 
   // ------------------------------------------------------------------ render de fotos
-  const loadInto = (rec) => ctx.loadWork(rec);
+  // En la exportación final (≥ 200 ppp) los RAW se revelan a tamaño completo; en la vista previa basta media resolución.
+  const loadInto = (rec, dpi) => ctx.loadWork(rec, rec.edits, { full: dpi >= 200 });
 
   function renderCover(we, edits, ww, wh) {
     const g = we.geometryInfo(edits, false);
@@ -131,7 +132,7 @@ export function createPrintUI(ctx) {
     const items = [];
     for (let i = 0; i < recs.length && i < windows.length; i++) {
       const rec = recs[i];
-      const we = await loadInto(rec);
+      const we = await loadInto(rec, dpi);
       const canvasPhoto = renderCover(we, rec.edits, windows[i].w, windows[i].h);
       items.push({
         aspect: canvasPhoto.width / canvasPhoto.height,

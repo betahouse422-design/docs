@@ -9,6 +9,7 @@
 
 import { VERT, VERT_VIEW, DOWN_FRAG, BLUR_FRAG, MAIN_FRAG } from './shaders.js';
 import { buildLUT, LUT_SIZE } from './curves.js';
+import { packRowsHalf } from './raw.js';
 import { strokesToAlpha } from './brush.js';
 import {
   HSL_RANGES, CURVE_CHANNELS, HSL_CURVES, lookActive, defaultEdits, curvesActive, hslCurvesActive, hslActive, gradingActive,
@@ -88,6 +89,39 @@ export class Engine {
     this.srcSize = [cw, ch];
     this.maxLod = Math.floor(Math.log2(Math.max(cw, ch)));
     this._buildBlur();
+  }
+
+  // RAW revelado: RGB lineal de 16 bits (resultado de decodeRaw). Se sube como textura half-float (RGBA16F),
+  // sin pasar por 8 bits, para conservar los detalles de luces y sombras. Devuelve false si la GPU no admite
+  // texturas half-float con mipmaps (entonces el llamador usa setSource con un canvas de 8 bits).
+  setSourceLinear(raw) {
+    const gl = this.gl;
+    if (!gl.getExtension('EXT_color_buffer_float')) return false;
+    const w = raw.width; const h = raw.height;
+    if (Math.max(w, h) > this.maxTex) return false;
+    if (this.srcTex) gl.deleteTexture(this.srcTex);
+    this.srcTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    // por franjas: la conversión a half-float no necesita una copia completa en memoria
+    const band = Math.max(16, Math.min(512, Math.floor(4e6 / w)));
+    const buf = new Uint16Array(w * band * 4);
+    for (let y1 = h; y1 > 0; y1 -= band) {
+      const y0 = Math.max(0, y1 - band); const rows = y1 - y0;
+      packRowsHalf(raw, y0, y1, buf); // filas de arriba hacia abajo -> textura (origen abajo): la franja más alta de la imagen queda arriba
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, h - y1, w, rows, gl.RGBA, gl.HALF_FLOAT, buf.subarray(0, w * rows * 4));
+    }
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.srcSize = [w, h];
+    this.maxLod = Math.floor(Math.log2(Math.max(w, h)));
+    this._buildBlur();
+    return true;
   }
 
   hasSource() { return !!this.srcTex; }

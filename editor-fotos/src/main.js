@@ -22,6 +22,7 @@ import {
 } from './workflow.js';
 import { createPrintUI } from './print-ui.js';
 import { parseCube, MAX_CUBE_BYTES } from './lut.js';
+import { isRawName, decodeRaw, rawToCanvas, canDecodeFull } from './raw.js';
 import { newStroke, MAX_STROKES, MAX_STROKE_POINTS } from './brush.js';
 import { watermarkBlob, loadImageAsset } from './compose.js';
 import { LOGO_POSITIONS } from './layout.js';
@@ -122,6 +123,7 @@ function setZoom(z, ax = 0.5, ay = 0.5) {
   if (zm.z > 1.0001) { zm.cx = px - (ax - 0.5) / Math.min(ZOOM_MAX, Math.max(1, zm.z)); zm.cy = py - (ay - 0.5) / Math.min(ZOOM_MAX, Math.max(1, zm.z)); }
   if (old <= 1.0001 && zm.z > 1.0001 && !zoomActive()) { /* en recorte o máscaras no se aplica */ }
   clampZoom(); requestRender();
+  if (ui.zoom.z > 1.05) ensureFullRaw();
 }
 function panBy(dx, dy) { // en fracciones de la vista
   if (!zoomActive()) return;
@@ -1082,15 +1084,50 @@ function scheduleSave() {
 // ---------- biblioteca de fotos ----------
 const lib = new Library();
 let workEngine = null; let workId = null;
+
+// ---------- origen de la foto (JPEG/PNG… o RAW) ----------
+// Un RAW se revela a RGB lineal de 16 bits (LibRaw). Para editar basta media resolución (rápido: ~1 s); el tamaño
+// completo se revela al acercar el zoom o al exportar. Devuelve algo que `applySource` sabe subir a un motor.
+async function decodeSource(rec, { full = false } = {}) {
+  if (!rec.isRaw) return { kind: 'bitmap', bmp: await decodeBlob(rec.blob), full: true };
+  const wantFull = full && canDecodeFull(rec.width, rec.height);
+  return { kind: 'raw', raw: await decodeRaw(rec.blob, { half: !wantFull }), full: wantFull };
+}
+function applySource(eng, src) {
+  if (src.kind === 'bitmap') { eng.setSource(src.bmp); if (src.bmp.close) src.bmp.close(); }
+  else if (!eng.setSourceLinear(src.raw)) eng.setSource(rawToCanvas(src.raw)); // GPU sin texturas half-float: 8 bits
+  eng.srcFull = src.full;
+}
+
+// Revela el RAW de la foto actual a tamaño completo (una sola vez) y lo cambia en la vista sin perder la edición.
+async function ensureFullRaw() {
+  if (ui.fullRawBusy) return ui.fullRawBusy;
+  const id = ui.photoId;
+  if (!id || !engine.hasSource() || engine.srcFull !== false) return;
+  ui.fullRawBusy = (async () => {
+    try {
+      const rec = await storage.getPhoto(id);
+      if (!rec || !rec.isRaw || !canDecodeFull(rec.width, rec.height)) { engine.srcFull = true; return; }
+      toast('Revelando todo el detalle del RAW…');
+      const src = await decodeSource(rec, { full: true });
+      if (ui.photoId !== id) return; // cambió de foto mientras tanto
+      applySource(engine, src);
+      requestRender();
+    } catch (err) { console.error(err); engine.srcFull = true; toast(err.message, true); }
+    finally { ui.fullRawBusy = null; }
+  })();
+  return ui.fullRawBusy;
+}
+
 const getWorkEngine = () => { if (!workEngine) workEngine = new Engine(document.createElement('canvas')); return workEngine; };
 
 // Motor de trabajo (miniaturas, impresión) con la foto de `rec` cargada.
-async function loadWork(rec, edits = rec.edits) {
+async function loadWork(rec, edits = rec.edits, { full = false } = {}) {
   const we = getWorkEngine();
   if (edits && edits.look && edits.look.id) await ensureLook(we, edits.look.id);
-  if (workId === rec.id && we.hasSource()) return we;
-  const bmp = await decodeBlob(rec.blob);
-  we.setSource(bmp); if (bmp.close) bmp.close();
+  if (workId === rec.id && we.hasSource() && (!full || we.srcFull !== false)) return we;
+  const src = await decodeSource(rec, { full });
+  applySource(we, src);
   workId = rec.id;
   return we;
 }
@@ -1119,30 +1156,52 @@ async function saveCurrent() {
   await lib.put(rec);
 }
 
-const isImageFile = (f) => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif|avif|gif|bmp)$/i.test(f.name);
+const isImageFile = (f) => isRawName(f.name) || /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif|avif|gif|bmp)$/i.test(f.name);
+
+// Importa un RAW: revela a media resolución, calcula un revelado base (tono automático) y la miniatura.
+async function importRaw(file, id, order) {
+  const raw = await decodeRaw(file, { half: true });
+  const we = getWorkEngine();
+  if (!we.setSourceLinear(raw)) we.setSource(rawToCanvas(raw));
+  we.srcFull = false; workId = id; // el motor de trabajo ya tiene esta foto a media resolución
+  we.render(defaultEdits(), { maxW: 500, maxH: 500, upscale: false });
+  const edits = applyAutoTone(defaultEdits(), autoToneFromHistogram(lumaHistogram(we.readPixels().data)));
+  we.render(edits, { maxW: 240, maxH: 240, upscale: false });
+  const thumb = await makeThumb(we.canvas, we.canvas.width, we.canvas.height);
+  const w = raw.width * 2; const h = raw.height * 2; // tamaño completo (media resolución = la mitad en cada lado)
+  return {
+    id, name: file.name.replace(/\.[^.]+$/, ''), blob: file, edits, status: 'pending', thumb, isRaw: true, rawMeta: raw.meta,
+    addedAt: Date.now(), order, width: w, height: h, aspect: raw.width / raw.height,
+  };
+}
 
 async function openFiles(list) {
   const files = [...list].filter(isImageFile);
   if (!files.length) { toast('Ese archivo no es una imagen compatible', true); return; }
   if (files.length > 1) toast(`Abriendo ${files.length} fotos…`);
-  let firstId = null; let failed = 0;
+  let firstId = null; let failed = 0; let lastError = '';
   for (const [i, file] of files.entries()) {
     try {
       const id = storage.fileKey(file);
       if (!(await storage.getPhoto(id))) {
-        const bmp = await decodeBlob(file);
-        const { w, h } = sizeOf(bmp);
-        const thumb = await makeThumb(bmp, w, h);
-        if (bmp.close) bmp.close();
-        await lib.put({
-          id, name: file.name.replace(/\.[^.]+$/, ''), blob: file, edits: defaultEdits(), status: 'pending', thumb,
-          addedAt: Date.now(), order: Date.now() + i, width: w, height: h, aspect: w / h,
-        });
+        if (isRawName(file.name)) {
+          if (files.length > 1) toast(`Revelando RAW ${i + 1} de ${files.length}…`);
+          await lib.put(await importRaw(file, id, Date.now() + i));
+        } else {
+          const bmp = await decodeBlob(file);
+          const { w, h } = sizeOf(bmp);
+          const thumb = await makeThumb(bmp, w, h);
+          if (bmp.close) bmp.close();
+          await lib.put({
+            id, name: file.name.replace(/\.[^.]+$/, ''), blob: file, edits: defaultEdits(), status: 'pending', thumb,
+            addedAt: Date.now(), order: Date.now() + i, width: w, height: h, aspect: w / h,
+          });
+        }
       }
       firstId = firstId || id;
-    } catch (err) { failed++; console.error(err); }
+    } catch (err) { failed++; lastError = err.message || ''; console.error(err); }
   }
-  if (failed) toast(`${failed} archivo(s) no se pudieron abrir. Si son HEIC o RAW, tu navegador puede no soportarlos.`, true);
+  if (failed) toast(isRawName(files[0].name) && lastError ? lastError : `${failed} archivo(s) no se pudieron abrir. Si son HEIC, tu navegador puede no soportarlos.`, true);
   if (firstId) await selectPhoto(firstId);
 }
 const openFile = (file) => (file ? openFiles([file]) : undefined);
@@ -1152,9 +1211,11 @@ async function selectPhoto(id) {
   if (ui.photoId && ui.photoId !== id) await saveCurrent();
   const rec = await storage.getPhoto(id);
   if (!rec) return;
-  const bmp = await decodeBlob(rec.blob);
-  if (token !== ui.loadToken) { if (bmp.close) bmp.close(); return; } // el usuario ya eligió otra
-  engine.setSource(bmp); if (bmp.close) bmp.close();
+  if (rec.isRaw) toast('Revelando RAW…');
+  let src;
+  try { src = await decodeSource(rec); } catch (err) { console.error(err); toast(err.message, true); return; }
+  if (token !== ui.loadToken) { if (src.bmp && src.bmp.close) src.bmp.close(); return; } // el usuario ya eligió otra
+  applySource(engine, src);
   ui.photoId = id; ui.fileId = id; ui.fileName = rec.name;
   resetZoom(); ui.cropMode = false; ui.cropDraft = null; ui.selMask = -1; ui.presetSession = null; ui.selPresetId = null; ui.pick = null; ui.spotTool = false; ui.selSpot = -1;
   $('#empty').hidden = true; document.body.classList.add('has-photos');
@@ -1298,6 +1359,7 @@ async function doExport() {
   const type = $('#expType').value;
   const quality = Number($('#expQuality').value) / 100;
   toast('Exportando…');
+  await ensureFullRaw(); // un RAW se exporta con todo su detalle, no con la media resolución de la vista
   await new Promise((r) => setTimeout(r, 30));
   const { blob, width, height } = await engine.exportBlob(store.get(), { type, quality });
   requestRender();

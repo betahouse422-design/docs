@@ -51,7 +51,7 @@ export class Library {
       url = { blob: rec.thumb, url: URL.createObjectURL(rec.thumb) };
       this.urls.set(rec.id, url);
     }
-    return { id: rec.id, name: rec.name, status: rec.status, aspect: rec.aspect || 1.5, width: rec.width, height: rec.height, thumbURL: url ? url.url : '' };
+    return { id: rec.id, name: rec.name, status: rec.status, aspect: rec.aspect || 1.5, width: rec.width, height: rec.height, isRaw: !!rec.isRaw, thumbURL: url ? url.url : '' };
   }
 
   async load() {
@@ -128,7 +128,8 @@ export function createFilmstrip(root, lib, handlers) {
       cb.addEventListener('click', (e) => { e.stopPropagation(); lib.toggleSelected(p.id); });
       const badge = el('span', { class: `badge ${p.status}`, title: STATUS_LABELS[p.status] }, p.status === 'approved' ? '✓' : p.status === 'edited' ? '✎' : '');
       const img = p.thumbURL ? el('img', { src: p.thumbURL, alt: p.name, draggable: 'false' }) : el('span', { class: 'noimg' }, '…');
-      const b = el('button', { class: 'thumb' + (p.id === lib.currentId ? ' on' : ''), type: 'button', role: 'option', 'data-id': p.id, title: `${p.name} — ${STATUS_LABELS[p.status]}`, 'aria-selected': p.id === lib.currentId }, img, badge, cb);
+      const rawTag = p.isRaw ? el('span', { class: 'rawtag', title: 'Archivo RAW' }, 'RAW') : null;
+      const b = el('button', { class: 'thumb' + (p.id === lib.currentId ? ' on' : ''), type: 'button', role: 'option', 'data-id': p.id, title: `${p.name} — ${STATUS_LABELS[p.status]}`, 'aria-selected': p.id === lib.currentId }, img, badge, cb, ...(rawTag ? [rawTag] : []));
       b.addEventListener('click', () => handlers.onSelect(p.id));
       return b;
     }));

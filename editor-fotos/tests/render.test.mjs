@@ -5,6 +5,7 @@ import { chromium } from 'playwright-core';
 import { existsSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { startServer } from './serve.mjs';
+import { makeDng, patchesColor } from './make-dng.mjs';
 
 const CANDIDATES = [
   process.env.CHROMIUM_PATH,
@@ -27,9 +28,11 @@ await page.waitForFunction(() => window.__ready === true, null, { timeout: 15000
 
 // ---- ayudantes dentro de la página ----
 await page.evaluate(() => {
-  const { engine, model, lut } = window.__t;
-  window.model = model; window.lut = lut;
+  const { engine, model, lut, raw } = window.__t;
+  window.model = model; window.lut = lut; window.raw = raw;
   const H = {};
+  H.dng = async (b64, opts) => { const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)); return raw.decodeRaw(new Blob([bytes]), opts); };
+  H.rawPx = (r, fx, fy) => { const x = Math.floor(fx * r.width), y = Math.floor(fy * r.height); const i = (y * r.width + x) * 3; return [...r.data.slice(i, i + 3)].map((v) => v / 65535); };
   H.edits = () => model.defaultEdits();
   H.load = (w, h, kind) => {
     const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -621,6 +624,48 @@ t('zoom: los ajustes locales (viñeta, máscara) siguen a la imagen, no a la pan
   assert.ok(r.corner < r.center - 40, 'la viñeta oscurece la esquina');
   r.zc.forEach((v) => assert.ok(v > r.center - 12, `en el centro ampliado no hay viñeta fuerte (${v})`));
   assert.ok(r.zk < r.center - 30, `la esquina ampliada sigue oscura (${r.zk})`);
+});
+
+t('RAW: el revelado es lineal y respeta los valores de la escena (parches conocidos)', async () => {
+  const b64 = makeDng({ width: 128, height: 64, color: patchesColor(128, 64) }).toString('base64');
+  const r = await run(async (b64) => {
+    const raw = await __h.dng(b64, {});
+    return { w: raw.width, h: raw.height, p: [0.12, 0.37, 0.62, 0.87].map((x) => __h.rawPx(raw, x, 0.5)), meta: raw.meta, half: raw.half };
+  }, b64);
+  assert.equal(r.w, 128); assert.equal(r.h, 64);
+  const want = [[0.8, 0.05, 0.05], [0.05, 0.7, 0.05], [0.05, 0.05, 0.8], [0.18, 0.18, 0.18]];
+  want.forEach((w, k) => r.p[k].forEach((v, i) => near(v, w[i], 0.012, `parche ${k} canal ${i}`)));
+  assert.equal(r.half, false);
+});
+
+t('RAW: media resolución tiene la mitad de lado; la orientación EXIF se aplica', async () => {
+  const r = await run(async ([a, b]) => {
+    const h = await __h.dng(a, { half: true }); const rot = await __h.dng(b, {});
+    return { half: [h.width, h.height], rot: [rot.width, rot.height], rotTop: __h.rawPx(rot, 0.5, 0.12), rotBottom: __h.rawPx(rot, 0.5, 0.88) };
+  }, [makeDng({ width: 128, height: 64, color: patchesColor(128, 64) }).toString('base64'), makeDng({ width: 128, height: 64, color: patchesColor(128, 64), orientation: 6 }).toString('base64')]);
+  assert.deepEqual(r.half, [64, 32]);
+  assert.deepEqual(r.rot, [64, 128], 'orientación 6 gira 90° y cambia el alto por el ancho');
+  near(r.rotTop[0], 0.8, 0.02, 'arriba queda el rojo (el lado izquierdo del sensor)'); near(r.rotBottom[0], 0.18, 0.02, 'abajo el gris');
+});
+
+t('RAW en el motor: textura half-float, se ve igual que el cálculo y la exposición actúa sobre luz lineal', async () => {
+  const b64 = makeDng({ width: 128, height: 64, color: patchesColor(128, 64) }).toString('base64');
+  const r = await run(async (b64) => {
+    const raw = await __h.dng(b64, {});
+    const ok = window.__t.engine.setSourceLinear(raw);
+    const e = __h.edits(); __h.render(e);
+    const base = [0.12, 0.37, 0.62, 0.87].map((x) => __h.px(x, 0.5));
+    const e1 = __h.edits(); e1.light.exposure = 1; __h.render(e1); const plus1 = __h.px(0.87, 0.5);
+    const tall = await __h.dng(b64, {}); window.__t.engine.setSource(window.__t.raw.rawToCanvas(tall)); __h.render(e);
+    const fallback = [0.12, 0.37, 0.62, 0.87].map((x) => __h.px(x, 0.5));
+    return { ok, base, plus1, fallback, size: window.__t.engine.srcSize };
+  }, b64);
+  assert.equal(r.ok, true, 'la GPU de pruebas admite half-float');
+  const srgb = (l) => Math.round(255 * (l <= 0.0031308 ? 12.92 * l : 1.055 * l ** (1 / 2.4) - 0.055));
+  [[0.8, 0.05, 0.05], [0.05, 0.7, 0.05], [0.05, 0.05, 0.8], [0.18, 0.18, 0.18]].forEach((w, k) => w.forEach((v, i) => near(r.base[k][i], srgb(v), 4, `parche ${k} canal ${i}`)));
+  r.plus1.forEach((v) => near(v, srgb(0.36), 4, '+1 EV duplica la luz lineal (gris 18 % -> 36 %)'));
+  r.fallback.forEach((p, k) => p.forEach((v, i) => near(v, r.base[k][i], 3, `plan B (8 bits) parche ${k} canal ${i}`)));
+  assert.deepEqual(r.size, [128, 64]);
 });
 
 for (const [name, fn] of tests) {
