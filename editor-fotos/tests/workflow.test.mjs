@@ -450,6 +450,118 @@ t('imprimir: prepara las hojas con su tamaño de papel y abre el diálogo de imp
   await ctx.close();
 });
 
+// imagen de prueba dibujada por el código que se le pasa
+async function drawPng(page, w, h, body) {
+  const b64 = await page.evaluate(({ w, h, body }) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); new Function('g', 'w', 'h', body)(g, w, h); return c.toDataURL('image/png').split(',')[1]; }, { w, h, body });
+  return Buffer.from(b64, 'base64');
+}
+const openBuffers = async (page, list) => {
+  await page.locator('#file').setInputFiles(list.map(([name, buf]) => file(name, buf)));
+  await page.waitForFunction((n) => window.__app.lib.items.length >= n && window.__app.ui.photoId && window.__app.engine.hasSource(), list.length);
+  await frame(page);
+};
+const viewPx = (page, fx, fy) => page.evaluate(([fx, fy]) => { const { width, height, data } = window.__app.engine.readPixels(); const i = (Math.floor(fy * height) * width + Math.floor(fx * width)) * 4; return [data[i], data[i + 1], data[i + 2]]; }, [fx, fy]);
+
+t('gotero de balance de blancos: tocar un gris con dominante cálida lo neutraliza', async () => {
+  const { page, ctx } = await newPage();
+  const buf = await drawPng(page, 600, 400, "g.fillStyle='rgb(200,205,215)'; g.fillRect(0,0,w,h); g.fillStyle='rgb(190,165,135)'; g.fillRect(w*0.3,h*0.3,w*0.4,h*0.4);");
+  await openBuffers(page, [['calida.png', buf]]);
+  const before = await viewPx(page, 0.5, 0.5);
+  assert.ok(before[0] - before[2] > 50, `la prueba necesita una dominante cálida: ${before}`);
+  await page.click('#btnWbPick');
+  assert.equal(await page.evaluate(() => window.__app.ui.pick), 'wb');
+  const box = await page.locator('#overlay').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.waitForFunction(() => window.__app.ui.pick === null);
+  await frame(page);
+  const e = await page.evaluate(() => window.__app.store.get().color);
+  assert.ok(e.temperature < -20, `debe enfriar: ${e.temperature}`);
+  const after = await viewPx(page, 0.5, 0.5);
+  assert.ok(Math.max(...after) - Math.min(...after) < 14, `tras el gotero debe quedar neutro: ${after}`);
+  assert.equal(await page.evaluate(() => window.__app.store.canUndo()), true);
+  await ctx.close();
+});
+
+t('balance de blancos automático y tono automático', async () => {
+  const { page, ctx } = await newPage();
+  const buf = await drawPng(page, 600, 400, "const gr=g.createLinearGradient(0,0,w,0); gr.addColorStop(0,'rgb(60,45,30)'); gr.addColorStop(1,'rgb(110,85,60)'); g.fillStyle=gr; g.fillRect(0,0,w,h);");
+  await openBuffers(page, [['oscura.png', buf]]);
+  await page.click('#btnWbAuto');
+  await page.waitForFunction(() => window.__app.store.get().color.temperature !== 0);
+  assert.ok(await page.evaluate(() => window.__app.store.get().color.temperature) < -10, 'foto cálida: debe enfriar');
+  await page.click('#btnAutoTone');
+  await page.waitForFunction(() => window.__app.store.get().light.exposure !== 0);
+  assert.ok(await page.evaluate(() => window.__app.store.get().light.exposure) > 0.5, 'foto oscura: debe subir la exposición');
+  await page.click('#btnUndo'); await frame(page);
+  assert.equal(await page.evaluate(() => window.__app.store.get().light.exposure), 0, 'se puede deshacer');
+  await ctx.close();
+});
+
+t('quitar manchas: tocar una mancha la elimina, se puede mover el origen y deshacer', async () => {
+  const { page, ctx } = await newPage();
+  const buf = await drawPng(page, 800, 600, "g.fillStyle='rgb(150,120,90)'; g.fillRect(0,0,w,h); g.fillStyle='rgb(10,10,10)'; g.beginPath(); g.arc(w*0.5,h*0.5,14,0,7); g.fill();");
+  await openBuffers(page, [['migaja.png', buf]]);
+  const before = await viewPx(page, 0.5, 0.5);
+  assert.ok(before[0] < 60, `se debe ver la mancha: ${before}`);
+  await page.click('#tabs button[data-tab="retouch"]');
+  await page.click('#btnSpotTool');
+  assert.equal(await page.evaluate(() => window.__app.ui.spotTool), true);
+  const box = await page.locator('#overlay').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.waitForFunction(() => window.__app.store.get().spots.length === 1);
+  await frame(page);
+  const after = await viewPx(page, 0.5, 0.5);
+  assert.ok(Math.abs(after[0] - 150) < 18, `la mancha debe desaparecer: ${before} -> ${after}`);
+  await shot(page, '18-retoque');
+  // cambiar el origen arrastrando el círculo punteado: la parte editada sigue limpia
+  const sp = await page.evaluate(() => window.__app.store.get().spots[0]);
+  assert.ok(Math.hypot(sp.dx, sp.dy) > sp.r * 2, 'el origen debe quedar fuera de la mancha');
+  // seleccionar y cambiar el modo y el tamaño desde el panel
+  await page.selectOption('#spotMode', 'clone');
+  assert.equal(await page.evaluate(() => window.__app.store.get().spots[0].mode), 'clone');
+  await page.locator('#btnSpotDel').click();
+  await page.waitForFunction(() => window.__app.store.get().spots.length === 0);
+  await frame(page);
+  const back = await viewPx(page, 0.5, 0.5);
+  assert.ok(back[0] < 60, 'al eliminar el retoque vuelve la mancha');
+  await page.click('#btnUndo'); await frame(page);
+  assert.equal(await page.evaluate(() => window.__app.store.get().spots.length), 1, 'deshacer recupera el retoque');
+  await ctx.close();
+});
+
+t('quitar manchas: con la foto enderezada se avisa y no se puede usar', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}]);
+  await page.evaluate(() => { window.__app.store.update((e) => { e.geometry.straighten = 5; }); window.__app.store.commit(); });
+  await page.click('#tabs button[data-tab="retouch"]');
+  assert.equal(await page.locator('#btnSpotTool').isDisabled(), true);
+  await ctx.close();
+});
+
+t('"Auto" en varias fotos marcadas aplica tono y balance a cada una', async () => {
+  const { page, ctx } = await newPage();
+  const dark = await drawPng(page, 500, 330, "g.fillStyle='rgb(50,38,26)'; g.fillRect(0,0,w,h); g.fillStyle='rgb(90,70,50)'; g.fillRect(w*.3,h*.3,w*.3,h*.3);");
+  const dark2 = await drawPng(page, 500, 330, "g.fillStyle='rgb(40,30,22)'; g.fillRect(0,0,w,h); g.fillStyle='rgb(100,78,55)'; g.fillRect(w*.2,h*.3,w*.4,h*.3);");
+  await openBuffers(page, [['a.png', dark], ['b.png', dark2]]);
+  await page.locator('.thumb .sel').nth(0).check(); await page.locator('.thumb .sel').nth(1).check();
+  await page.click('[data-act="auto"]');
+  await page.waitForFunction(() => window.__app.lib.items.every((p) => p.status === 'edited'), null, { timeout: 30000 });
+  const ex = await page.evaluate(async () => { const s = await import('/src/storage.js'); const o = []; for (const p of window.__app.lib.items) { const r = await s.getPhoto(p.id); o.push([r.edits.light.exposure, r.edits.color.temperature]); } return o; });
+  ex.forEach(([e, t]) => { assert.ok(e > 0.3, `exposición ${e}`); assert.ok(t < 0, `temperatura ${t}`); });
+  await ctx.close();
+});
+
+t('ruido y neblina: los controles nuevos aparecen y modifican las ediciones', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}]);
+  await page.locator('#tabAdjust summary', { hasText: 'Reducción de ruido' }).click();
+  await setSlider(page, 'Luminosidad', 40, '#tabAdjust details:has(summary:text("Reducción de ruido"))');
+  await setSlider(page, 'Quitar neblina', 25);
+  const d = await page.evaluate(() => window.__app.store.get().detail);
+  assert.equal(d.denoise, 40); assert.equal(d.dehaze, 25);
+  await ctx.close();
+});
+
 t('teléfono: el modo Imprimir y la tira de fotos caben y se pueden usar con el dedo', async () => {
   const { page, ctx } = await newPage({ width: 390, height: 844 }, { touch: true });
   await openPhotos(page, [{}, { bg: '#30a050' }]);

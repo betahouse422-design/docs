@@ -257,6 +257,23 @@ export class Engine {
     gl.uniform1f(P.u('u_vib'), e.color.vibrance);
     gl.uniform1f(P.u('u_clarity'), e.detail.clarity);
     gl.uniform1f(P.u('u_sharp'), e.detail.sharpness);
+    gl.uniform1f(P.u('u_texture'), e.detail.texture || 0);
+    gl.uniform1f(P.u('u_dehaze'), e.detail.dehaze || 0);
+    gl.uniform1f(P.u('u_denoise'), e.detail.denoise || 0);
+    gl.uniform1f(P.u('u_cdenoise'), e.detail.colorDenoise || 0);
+    gl.uniform2f(P.u('u_srcTexel'), 1 / this.srcSize[0], 1 / this.srcSize[1]);
+    gl.uniform1f(P.u('u_maxLod'), this.maxLod);
+
+    // retoque de manchas (modelo: origen arriba; shader: origen abajo)
+    const spots = (e.spots || []).slice(0, 16);
+    gl.uniform1i(P.u('u_spotCount'), spots.length);
+    const SA = new Float32Array(64); const SB = new Float32Array(64);
+    spots.forEach((sp, i) => {
+      SA.set([sp.x, 1 - sp.y, sp.r, sp.feather], i * 4);
+      SB.set([sp.dx, -sp.dy, sp.opacity, sp.mode === 'clone' ? 1 : 0], i * 4);
+    });
+    gl.uniform4fv(P.u('u_spotA[0]'), SA);
+    gl.uniform4fv(P.u('u_spotB[0]'), SB);
     gl.uniform1f(P.u('u_fade'), e.effects.fade);
     gl.uniform1f(P.u('u_vignette'), e.effects.vignette);
     gl.uniform1f(P.u('u_grain'), e.effects.grain);

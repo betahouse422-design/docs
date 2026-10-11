@@ -6,9 +6,12 @@ import { hitHandle, resizeRect, moveRect } from './geometry.js';
 const ACCENT = '#ffb347';
 
 export class Overlay {
-  // hooks: getMode() -> 'none'|'crop'|'mask'
+  // hooks: getMode() -> 'none'|'crop'|'mask'|'pick'|'spot'
   //        crop: getCrop(), setCrop(rect, final), getAspect(), getOrientedSize()
   //        mask: getMask(), updateMask(patch, final)
+  //        pick: onPick(x, y)                        (gotero; coordenadas 0..1 de la vista)
+  //        spot: getSpotsView() -> [{cx,cy,rw,rh,sx,sy,sel,mode}] (0..1 de la vista), selectedSpot(),
+  //              addSpotView(x, y), updateSpotView(i, patch, final), selectSpot(i)
   constructor(canvas, hooks) {
     this.canvas = canvas;
     this.h = hooks;
@@ -42,6 +45,17 @@ export class Overlay {
     if (mode === 'none') return;
     const p = this._pt(e);
     const touch = e.pointerType !== 'mouse';
+    if (mode === 'pick') { e.preventDefault(); this.h.onPick(p.x, p.y); return; }
+    if (mode === 'spot') {
+      e.preventDefault();
+      const hit = this._spotHit(p, touch ? 26 : 16);
+      if (!hit) { this.h.addSpotView(p.x, p.y); return; }
+      this.h.selectSpot(hit.i);
+      this.drag = { kind: 'spot', i: hit.i, part: hit.part, start: p, spot: { ...this.h.getSpotsView()[hit.i] } };
+      try { this.canvas.setPointerCapture(e.pointerId); } catch { /* algunos navegadores lo rechazan */ }
+      this.draw();
+      return;
+    }
     if (mode === 'crop') {
       const rect = this.h.getCrop();
       const handle = hitHandle(rect, p.x, p.y, touch ? 0.06 : 0.035);
@@ -71,6 +85,21 @@ export class Overlay {
       return;
     }
     const p = this._pt(e);
+    if (this.drag.kind === 'spot') {
+      const d = this.drag; const sp = d.spot;
+      const clamp = (v) => Math.min(1, Math.max(0, v));
+      if (d.part === 'center') {
+        const dxn = p.x - d.start.x; const dyn = p.y - d.start.y;
+        // el centro se mueve y el origen lo acompaña (conserva su desplazamiento)
+        this.h.updateSpotView(d.i, { cx: clamp(sp.cx + dxn), cy: clamp(sp.cy + dyn), sx: sp.sx + dxn, sy: sp.sy + dyn }, false);
+      } else if (d.part === 'source') {
+        this.h.updateSpotView(d.i, { sx: clamp(p.x), sy: clamp(p.y) }, false);
+      } else if (d.part === 'radius') {
+        this.h.updateSpotView(d.i, { rw: Math.max(0.004, Math.abs(p.x - sp.cx)) }, false);
+      }
+      this.draw();
+      return;
+    }
     if (this.drag.kind === 'crop') {
       const d = this.drag;
       const [ow, oh] = this.h.getOrientedSize();
@@ -89,6 +118,7 @@ export class Overlay {
     if (!this.drag) return;
     const d = this.drag;
     this.drag = null;
+    if (d.kind === 'spot') { this.h.updateSpotView(d.i, {}, true); this.draw(); return; }
     if (d.kind === 'crop') this.h.setCrop(this.h.getCrop(), true);
     else this.h.updateMask({}, true);
     this.draw();
@@ -148,6 +178,40 @@ export class Overlay {
     this.h.updateMask(patch, false);
   }
 
+  // ---------- retoque de manchas ----------
+
+  _spotHit(p, tolPx) {
+    const spots = this.h.getSpotsView();
+    const px = [p.x * p.w, p.y * p.h];
+    // primero las asas del seleccionado, luego el interior de cualquiera
+    const sel = this.h.selectedSpot();
+    const order = [...spots.keys()].sort((a, b) => (b === sel) - (a === sel));
+    for (const i of order) {
+      const sp = spots[i];
+      const c = [sp.cx * p.w, sp.cy * p.h]; const s = [sp.sx * p.w, sp.sy * p.h]; const rad = [sp.cx * p.w + sp.rw * p.w, sp.cy * p.h];
+      if (Math.hypot(px[0] - s[0], px[1] - s[1]) <= tolPx) return { i, part: 'source' };
+      if (Math.hypot(px[0] - rad[0], px[1] - rad[1]) <= tolPx * 0.8 && i === sel) return { i, part: 'radius' };
+      if (((px[0] - c[0]) / (sp.rw * p.w)) ** 2 + ((px[1] - c[1]) / (sp.rh * p.h)) ** 2 <= 1.2) return { i, part: 'center' };
+    }
+    return null;
+  }
+
+  _drawSpots(ctx, W, H) {
+    const d = this.dpr || 1;
+    const spots = this.h.getSpotsView();
+    spots.forEach((sp, i) => {
+      const sel = i === this.h.selectedSpot();
+      const cx = sp.cx * W; const cy = sp.cy * H; const sx = sp.sx * W; const sy = sp.sy * H;
+      ctx.lineWidth = (sel ? 2.5 : 1.5) * d; ctx.strokeStyle = sel ? ACCENT : 'rgba(255,255,255,.85)';
+      ctx.beginPath(); ctx.ellipse(cx, cy, sp.rw * W, sp.rh * H, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([6 * d, 5 * d]);
+      ctx.beginPath(); ctx.ellipse(sx, sy, sp.rw * W, sp.rh * H, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(sx, sy); ctx.stroke();
+      ctx.setLineDash([]);
+      if (sel) { ctx.fillStyle = ACCENT; ctx.beginPath(); ctx.arc(cx + sp.rw * W, cy, 5 * d, 0, Math.PI * 2); ctx.fill(); }
+    });
+  }
+
   // ---------- dibujo ----------
 
   draw() {
@@ -158,6 +222,7 @@ export class Overlay {
     const mode = this.h.getMode();
     if (mode === 'crop') this._drawCrop(ctx, W, H);
     else if (mode === 'mask') this._drawMask(ctx, W, H);
+    else if (mode === 'spot') this._drawSpots(ctx, W, H);
   }
 
   _drawCrop(ctx, W, H) {

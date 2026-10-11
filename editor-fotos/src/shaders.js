@@ -65,7 +65,12 @@ uniform vec2 u_outSize;
 // ajustes globales
 uniform float u_exposure, u_brightness, u_contrast, u_highlights, u_shadows, u_whites, u_blacks;
 uniform float u_temp, u_tint, u_sat, u_vib;
-uniform float u_clarity, u_sharp;
+uniform float u_clarity, u_sharp, u_texture, u_dehaze, u_denoise, u_cdenoise;
+uniform vec2 u_srcTexel;     // 1 / tamaño del origen
+uniform float u_maxLod;      // último nivel del mipmap del origen
+uniform int u_spotCount;
+uniform vec4 u_spotA[16];    // cx, cy (imagen girada, y arriba), radio (fracción del ancho), difuminado
+uniform vec4 u_spotB[16];    // dx, dy (hacia la zona de origen), opacidad, modo (0 = reparar, 1 = clonar)
 uniform float u_fade, u_vignette, u_grain, u_grainSize;
 uniform int u_hslOn;
 uniform vec3 u_hsl[8];
@@ -177,8 +182,8 @@ vec3 applyLocal(vec3 d, int i) {
   vec3 c = srgb2lin(clamp(d, 0.0, 1.0));
   c *= exp2(C.y);
   float t = D.x / 100.0;
-  c.r *= exp2(t * 0.45);
-  c.b *= exp2(-t * 0.45);
+  c.r *= exp2(t * 0.7);
+  c.b *= exp2(-t * 0.7);
   float ld = clamp(pow(max(luma(c), 0.0), 1.0 / 2.4), 0.0, 1.0);
   c *= exp2(D.z / 100.0 * 1.5 * (1.0 - ld) * (1.0 - ld) + D.y / 100.0 * 1.5 * ld * ld);
   d = lin2srgb(c);
@@ -190,6 +195,73 @@ vec3 applyLocal(vec3 d, int i) {
   return d;
 }
 
+vec3 sampleSrc(vec2 uv) { return textureLod(u_src, uv, u_lod0).rgb; }
+
+// Retoque de manchas: copia textura de otra zona. "Reparar" conserva la luz y el color
+// de donde está la mancha (corrige la diferencia de iluminación con el desenfoque).
+// Diferencia de luz y color entre el entorno de la mancha y el entorno de la zona de origen,
+// medida en un anillo FUERA de la mancha (el centro está contaminado por la propia mancha).
+vec3 ringCorrection(vec2 center, float R, vec2 off2) {
+  vec3 t = vec3(0.0);
+  vec3 s = vec3(0.0);
+  for (int k = 0; k < 8; k++) {
+    float a = float(k) * 0.7853982;
+    vec2 o = vec2(cos(a), sin(a)) * (R * 1.7) / u_orientedSize;
+    t += sampleSrc(orientedToSrc(center + o));
+    s += sampleSrc(orientedToSrc(center + o + off2));
+  }
+  return (t - s) / 8.0;
+}
+
+vec3 applySpots(vec2 ou, vec2 su, vec3 c) {
+  for (int i = 0; i < 16; i++) {
+    if (i >= u_spotCount) break;
+    vec4 A = u_spotA[i];
+    vec4 B = u_spotB[i];
+    float dist = length((ou - A.xy) * u_orientedSize);
+    float R = A.z * u_orientedSize.x;
+    float w = 1.0 - smoothstep(R * (1.0 - A.w), R, dist);
+    if (w <= 0.0) continue;
+    vec2 su2 = orientedToSrc(ou + B.xy);
+    vec3 s = sampleSrc(su2);
+    if (B.w < 0.5) s = max(s + ringCorrection(A.xy, R, B.xy), 0.0);
+    c = mix(c, s, w * B.z);
+  }
+  return c;
+}
+
+// Reducción de ruido que respeta los bordes: promedia vecinos parecidos.
+// Luminosidad: vecinos de color parecido. Color: vecinos de luminosidad parecida (mezcla el color).
+vec3 denoise(vec2 su, vec3 c0) {
+  float aL = u_denoise / 100.0;
+  float aC = u_cdenoise / 100.0;
+  if (aL <= 0.0 && aC <= 0.0) return c0;
+  vec2 px = u_srcTexel * exp2(u_lod0);
+  float sigL = mix(0.012, 0.22, aL);
+  float sigC = mix(0.03, 0.40, aC);
+  vec3 g0 = sqrt(max(c0, 0.0));
+  float y0 = luma(g0);
+  vec3 sumL = c0; float wL = 1.0;
+  vec3 sumC = c0; float wC = 1.0;
+  for (int i = 0; i < 12; i++) {
+    float a = float(i) * 0.5235988;
+    float rad = i < 6 ? 1.5 : 3.2;
+    vec3 s = sampleSrc(su + vec2(cos(a), sin(a)) * rad * px);
+    vec3 gs = sqrt(max(s, 0.0));
+    float dc = distance(gs, g0);
+    float wl = exp(-(dc * dc) / (sigL * sigL));
+    sumL += s * wl; wL += wl;
+    float dy = abs(luma(gs) - y0);
+    float wc = exp(-(dy * dy) / (sigC * sigC));
+    sumC += s * wc; wC += wc;
+  }
+  vec3 base = mix(c0, sumL / wL, aL);
+  float yb = luma(base);
+  vec3 chroma = mix(c0, sumC / wC, aC);
+  float yc = max(luma(chroma), 1e-5);
+  return mix(base, chroma * (yb / yc), aC);
+}
+
 void main() {
   // --- de la posición de salida a la del origen ---
   vec2 pq = (v_uv - 0.5) * u_cropPx * u_fit;
@@ -199,7 +271,9 @@ void main() {
   vec2 ou = vec2(u_crop.x + u_crop.z * 0.5, u_crop.y + u_crop.w * 0.5) + r / u_orientedSize;
   vec2 su = orientedToSrc(ou);
 
-  vec3 c = textureLod(u_src, su, u_lod0).rgb; // lineal
+  vec3 c = sampleSrc(su); // lineal
+  if (u_spotCount > 0) c = applySpots(ou, su, c);
+  c = denoise(su, c);
   vec3 srcDisp = lin2srgb(c);
 
   // =============== PASE LINEAL ===============
@@ -207,9 +281,9 @@ void main() {
 
   float t = u_temp / 100.0;
   float tn = u_tint / 100.0;
-  c.r *= exp2(t * 0.45 + tn * 0.08);
-  c.b *= exp2(-t * 0.45 + tn * 0.08);
-  c.g *= exp2(-tn * 0.30);
+  c.r *= exp2(t * 0.7 + tn * 0.1);
+  c.b *= exp2(-t * 0.7 + tn * 0.1);
+  c.g *= exp2(-tn * 0.5);
 
   if (u_shadows != 0.0 || u_highlights != 0.0) {
     float ld = clamp(pow(max(luma(c), 0.0), 1.0 / 2.4), 0.0, 1.0);
@@ -283,12 +357,32 @@ void main() {
     d.b = lutLookup(3.0, lutLookup(0.0, d.b));
   }
 
+  // quitar neblina: resta el velo (canal más oscuro de la imagen desenfocada) y recupera contraste
+  if (u_dehaze != 0.0) {
+    float k = u_dehaze / 100.0;
+    // el velo se estima a escala gruesa (un nivel alto del mipmap): seguiría al objeto si fuera fino
+    vec3 bl = lin2srgb(textureLod(u_src, su, clamp(u_maxLod - 2.0, 0.0, u_maxLod)).rgb);
+    if (k > 0.0) {
+      float veil = min(bl.r, min(bl.g, bl.b)) * k * 0.85;
+      d = (d - veil) / max(1.0 - veil, 0.05);
+      d = clamp(d, 0.0, 1.0);
+      d = mix(d, d * d * (3.0 - 2.0 * d), k * 0.25);
+    } else {
+      d = mix(d, vec3(0.86), -k * 0.32 * (0.35 + 0.65 * luma(d)));
+    }
+    d = clamp(d, 0.0, 1.0);
+  }
+
   // claridad (contraste local) y nitidez (detalle fino)
   if (u_clarity != 0.0) {
     vec3 bl = lin2srgb(texture(u_blur, su).rgb);
     float lm = luma(d);
     float mid = 1.0 - pow(abs(2.0 * lm - 1.0), 2.0);
     d += (srcDisp - bl) * (u_clarity / 100.0) * 1.3 * mid;
+  }
+  if (u_texture != 0.0) {
+    vec3 mid = lin2srgb(textureLod(u_src, su, u_lod0 + 3.0).rgb);
+    d += (srcDisp - mid) * (u_texture / 100.0) * 1.1;
   }
   if (u_sharp != 0.0) {
     vec3 fine = lin2srgb(textureLod(u_src, su, u_lod0 + 1.3).rgb);

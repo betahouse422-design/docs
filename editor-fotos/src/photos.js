@@ -105,6 +105,7 @@ export function createFilmstrip(root, lib, handlers) {
     btn('approve', '✓ Aprobar', 'Aprobar o quitar la aprobación (tecla A)'),
     btn('copy', 'Copiar ajustes', 'Copia los ajustes de esta foto'),
     btn('paste', 'Pegar en seleccionadas', 'Pega los ajustes copiados en las fotos marcadas'),
+    btn('auto', 'Auto', 'Tono y balance de blancos automáticos en las fotos marcadas (o en la actual)'),
     btn('selectAll', 'Marcar todas', 'Marca o desmarca todas las fotos'),
     btn('remove', 'Quitar', 'Quita de la biblioteca la foto actual o las marcadas'),
   );

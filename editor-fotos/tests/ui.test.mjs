@@ -277,7 +277,7 @@ t('las ediciones de una foto se guardan y se recuperan al reabrirla', async () =
     const file = new File([blob], 'prueba.png', { type: 'image/png', lastModified: 12345 });
     await window.__app.openFile(file);
     window.__app.store.set('light.exposure', 1.25); window.__app.store.commit();
-    await new Promise((r) => setTimeout(r, 700));
+    for (let i = 0; i < 60 && window.__app.lib.items[0].status !== 'edited'; i++) await new Promise((r) => setTimeout(r, 100)); // espera al guardado diferido
     window.__app.store.load({}); // simular otra sesión
     await window.__app.openFile(file);
     return window.__app.store.get().light.exposure;

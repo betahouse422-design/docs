@@ -19,6 +19,7 @@ export const HSL_LABELS = {
 export const CURVE_CHANNELS = ['master', 'r', 'g', 'b'];
 
 export const MAX_MASKS = 4;
+export const MAX_SPOTS = 16;
 
 const identityCurve = () => [[0, 0], [1, 1]];
 
@@ -36,10 +37,11 @@ export function defaultEdits() {
       highlights: { hue: 45, sat: 0 },
       balance: 0,
     },
-    detail: { clarity: 0, sharpness: 0 },
+    detail: { clarity: 0, sharpness: 0, texture: 0, dehaze: 0, denoise: 0, colorDenoise: 0 },
     effects: { vignette: 0, grain: 0, grainSize: 30, fade: 0 },
     geometry: { crop: { x: 0, y: 0, w: 1, h: 1 }, rotate90: 0, straighten: 0, flipH: false, flipV: false },
     masks: [],
+    spots: [],
   };
 }
 
@@ -72,7 +74,15 @@ export const SLIDER_GROUPS = [
   {
     id: 'detail', title: 'Detalle', sliders: [
       { path: 'detail.clarity', label: 'Claridad', min: -100, max: 100, step: 1 },
+      { path: 'detail.texture', label: 'Textura', min: -100, max: 100, step: 1 },
+      { path: 'detail.dehaze', label: 'Quitar neblina', min: -100, max: 100, step: 1 },
       { path: 'detail.sharpness', label: 'Nitidez', min: 0, max: 100, step: 1 },
+    ],
+  },
+  {
+    id: 'noise', title: 'Reducción de ruido', sliders: [
+      { path: 'detail.denoise', label: 'Luminosidad', min: 0, max: 100, step: 1 },
+      { path: 'detail.colorDenoise', label: 'Color', min: 0, max: 100, step: 1 },
     ],
   },
   {
@@ -138,7 +148,7 @@ export function isNeutral(edits) {
     }
   }
   return !curvesActive(edits) && !hslActive(edits) && !gradingActive(edits) &&
-    !geometryActive(edits) && edits.masks.length === 0;
+    !geometryActive(edits) && edits.masks.length === 0 && (edits.spots || []).length === 0;
 }
 
 // ---- Versionado -----------------------------------------------------------
@@ -152,6 +162,7 @@ export function migrate(raw) {
   const out = mergeInto(base, raw);
   out.v = EDITS_VERSION;
   out.masks = Array.isArray(raw.masks) ? raw.masks.slice(0, MAX_MASKS).map(normalizeMask) : [];
+  out.spots = Array.isArray(raw.spots) ? raw.spots.map(normalizeSpot).filter(Boolean).slice(0, MAX_SPOTS) : []; // primero limpiar, luego limitar
   for (const c of CURVE_CHANNELS) {
     const pts = raw.curves && raw.curves[c];
     out.curves[c] = Array.isArray(pts) && pts.length >= 2 ? sanitizeCurve(pts) : identityCurve();
@@ -163,7 +174,7 @@ function mergeInto(base, src) {
   if (typeof base !== 'object' || base === null || Array.isArray(base)) return src === undefined ? base : src;
   const out = Array.isArray(base) ? base.slice() : { ...base };
   for (const k of Object.keys(base)) {
-    if (k === 'masks' || k === 'curves') continue;
+    if (k === 'masks' || k === 'curves' || k === 'spots') continue;
     if (src && src[k] !== undefined) {
       out[k] = typeof base[k] === 'object' && base[k] !== null && !Array.isArray(base[k])
         ? mergeInto(base[k], src[k])
@@ -201,6 +212,25 @@ function normalizeMask(m) {
   const out = { ...d, ...m, adjust: { ...d.adjust, ...(m && m.adjust) } };
   out.type = t;
   return out;
+}
+
+// ---- Puntos de retoque (quitar manchas) ------------------------------------
+// Coordenadas en la imagen ya girada (0..1, origen arriba-izquierda), ANTES del recorte:
+// así siguen en su sitio si cambias el recorte. r = radio como fracción del ancho.
+// (dx, dy) = desplazamiento hasta la zona de la que se toma la textura.
+
+export function newSpot(x, y, r = 0.02, dx = 0.06, dy = 0, mode = 'heal') {
+  return { id: String(Date.now() + Math.floor(Math.random() * 1000)), x, y, r, dx, dy, feather: 0.5, opacity: 1, mode };
+}
+
+function normalizeSpot(sp) {
+  if (!sp || typeof sp !== 'object') return null;
+  const n = (v, lo, hi, d) => { const x = Number(v); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d; };
+  return {
+    id: String(sp.id || Date.now()), x: n(sp.x, 0, 1, 0.5), y: n(sp.y, 0, 1, 0.5), r: n(sp.r, 0.003, 0.3, 0.02),
+    dx: n(sp.dx, -1, 1, 0.06), dy: n(sp.dy, -1, 1, 0), feather: n(sp.feather, 0, 1, 0.5), opacity: n(sp.opacity, 0, 1, 1),
+    mode: sp.mode === 'clone' ? 'clone' : 'heal',
+  };
 }
 
 // ---- Presets --------------------------------------------------------------

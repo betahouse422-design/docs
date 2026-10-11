@@ -50,7 +50,31 @@ await page.evaluate(() => {
       ctx.fillStyle = 'rgb(128,128,128)'; ctx.fillRect(0, 0, w, h);
       for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) if ((x / 2 + y / 2) % 2 === 0) { ctx.fillStyle = 'rgb(150,150,150)'; ctx.fillRect(x, y, 2, 2); }
     }
+    // semilla fija para que las pruebas sean repetibles
+    let seed = 12345; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    if (kind === 'noise' || kind === 'cnoise' || kind === 'stepnoise') {
+      const img = ctx.createImageData(w, h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4; const base = kind === 'stepnoise' ? (x < w / 2 ? 60 : 200) : 128;
+        if (kind === 'cnoise') { const n = (rnd() - 0.5) * 90; img.data[i] = 128 + n; img.data[i + 1] = 128 - n * 0.5; img.data[i + 2] = 128 + (rnd() - 0.5) * 90; }
+        else { const n = (rnd() - 0.5) * 50; img.data[i] = img.data[i + 1] = img.data[i + 2] = base + n; }
+        img.data[i + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+    }
+    if (kind === 'haze') { const g = ctx.createLinearGradient(0, 0, w, 0); g.addColorStop(0, 'rgb(120,125,130)'); g.addColorStop(1, 'rgb(190,190,195)'); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); ctx.fillStyle = 'rgb(178,178,184)'; ctx.fillRect(w * 0.3, h * 0.3, w * 0.2, h * 0.4); }
+    if (kind === 'dot' || kind === 'gradot') {
+      if (kind === 'dot') { ctx.fillStyle = 'rgb(128,128,128)'; ctx.fillRect(0, 0, w, h); }
+      else { const g = ctx.createLinearGradient(0, 0, w, 0); g.addColorStop(0, 'rgb(40,40,40)'); g.addColorStop(1, 'rgb(220,220,220)'); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); }
+      ctx.fillStyle = 'rgb(0,0,0)'; ctx.beginPath(); ctx.arc(w * (kind === 'dot' ? 0.5 : 0.3), h * 0.5, w * 0.025, 0, Math.PI * 2); ctx.fill();
+    }
+    if (kind === 'dotright') { ctx.fillStyle = 'rgb(128,128,128)'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = 'rgb(0,0,0)'; ctx.beginPath(); ctx.arc(w * 0.75, h * 0.5, w * 0.025, 0, Math.PI * 2); ctx.fill(); }
     engine.setSource(c);
+  };
+  H.std = (x0, y0, x1, y1, ch = 0) => {
+    const { width, height, data } = engine.readPixels(); const xs = Math.floor(x0 * width), xe = Math.floor(x1 * width), ys = Math.floor(y0 * height), ye = Math.floor(y1 * height);
+    let n = 0, s = 0, s2 = 0; for (let y = ys; y < ye; y++) for (let x = xs; x < xe; x++) { const i = (y * width + x) * 4; const v = ch < 0 ? Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]) : data[i + ch]; n++; s += v; s2 += v * v; }
+    const m = s / n; return { mean: m, std: Math.sqrt(Math.max(0, s2 / n - m * m)) };
   };
   H.render = (e, opts = {}) => engine.render(e, { maxW: 4096, maxH: 4096, ...opts });
   H.px = (xf, yf) => {
@@ -347,6 +371,83 @@ t('exportar informa el tamaño completo aunque la pantalla se redibuje durante l
     const out = await p; return { w: out.width, h: out.height };
   });
   assert.deepEqual([r.w, r.h], [400, 300]);
+});
+
+t('reducción de ruido: baja bastante la variación en un gris con ruido', async () => {
+  const [a, b] = await run(() => {
+    __h.load(160, 160, 'noise'); __h.render(__h.edits()); const a = __h.std(0.2, 0.2, 0.8, 0.8);
+    const e = __h.edits(); e.detail.denoise = 100; __h.render(e); return [a, __h.std(0.2, 0.2, 0.8, 0.8)];
+  });
+  assert.ok(b.std < a.std * 0.6, `ruido ${a.std.toFixed(1)} -> ${b.std.toFixed(1)}`); near(b.mean, a.mean, 6, 'brillo medio');
+});
+
+t('reducción de ruido: conserva un borde marcado', async () => {
+  const [a, b] = await run(() => {
+    __h.load(160, 160, 'stepnoise'); __h.render(__h.edits());
+    const L0 = __h.std(0.1, 0.2, 0.4, 0.8).mean, R0 = __h.std(0.6, 0.2, 0.9, 0.8).mean;
+    const e = __h.edits(); e.detail.denoise = 80; __h.render(e);
+    const L1 = __h.std(0.1, 0.2, 0.4, 0.8).mean, R1 = __h.std(0.6, 0.2, 0.9, 0.8).mean;
+    return [R0 - L0, R1 - L1];
+  });
+  assert.ok(b > a * 0.9, `el borde se suavizó: ${a.toFixed(0)} -> ${b.toFixed(0)}`);
+});
+
+t('ruido de color: reduce la variación de color sin tocar el brillo medio', async () => {
+  const [a, b] = await run(() => {
+    __h.load(160, 160, 'cnoise'); __h.render(__h.edits()); const a = __h.std(0.2, 0.2, 0.8, 0.8, -1);
+    const e = __h.edits(); e.detail.colorDenoise = 100; __h.render(e); return [a, __h.std(0.2, 0.2, 0.8, 0.8, -1)];
+  });
+  assert.ok(b.mean < a.mean * 0.75, `color ${a.mean.toFixed(1)} -> ${b.mean.toFixed(1)}`);
+});
+
+t('quitar neblina sube el contraste local y su valor negativo lo baja', async () => {
+  const r = await run(() => {
+    // el velo se estima localmente: lo que debe crecer es la diferencia entre un objeto y su entorno
+    __h.load(160, 80, 'haze');
+    const diff = (e) => { __h.render(e); return __h.px(0.4, 0.5)[0] - __h.px(0.27, 0.5)[0]; };
+    const e0 = __h.edits(); const e1 = __h.edits(); e1.detail.dehaze = 80; const e2 = __h.edits(); e2.detail.dehaze = -80;
+    return { a: diff(e0), b: diff(e1), c: diff(e2) };
+  });
+  assert.ok(r.a > 5, `la prueba necesita un objeto visible: ${r.a}`);
+  assert.ok(r.b > r.a * 1.25, `quitar neblina: ${r.a} -> ${r.b}`); assert.ok(r.c < r.a * 0.9, `añadir neblina: ${r.a} -> ${r.c}`);
+});
+
+t('textura: realza el detalle fino y su valor negativo lo suaviza', async () => {
+  const r = await run(() => {
+    __h.load(128, 128, 'detail'); __h.render(__h.edits()); const a = __h.std(0.2, 0.2, 0.8, 0.8);
+    const e = __h.edits(); e.detail.texture = 100; __h.render(e); const b = __h.std(0.2, 0.2, 0.8, 0.8);
+    const e2 = __h.edits(); e2.detail.texture = -100; __h.render(e2); return { a: a.std, b: b.std, c: __h.std(0.2, 0.2, 0.8, 0.8).std };
+  });
+  assert.ok(r.b > r.a, `textura +: ${r.a.toFixed(2)} -> ${r.b.toFixed(2)}`); assert.ok(r.c <= r.a, `textura -: ${r.a.toFixed(2)} -> ${r.c.toFixed(2)}`);
+});
+
+t('retoque de manchas: una mancha negra desaparece y el resto no cambia', async () => {
+  const r = await run(() => {
+    __h.load(200, 200, 'dot'); __h.render(__h.edits()); const before = __h.px(0.5, 0.5)[0], far0 = __h.px(0.1, 0.1)[0];
+    const e = __h.edits(); e.spots.push({ id: 's', x: 0.5, y: 0.5, r: 0.06, dx: 0.2, dy: 0, feather: 0.5, opacity: 1, mode: 'heal' });
+    __h.render(e); return { before, after: __h.px(0.5, 0.5)[0], far: __h.px(0.1, 0.1)[0], far0 };
+  });
+  assert.ok(r.before < 20, `la mancha debería verse: ${r.before}`); near(r.after, 128, 6, 'tras retocar'); near(r.far, r.far0, 1, 'zona lejana');
+});
+
+t('retoque de manchas: opacidad 0 no hace nada y las manchas se quedan en su sitio al recortar', async () => {
+  const r = await run(() => {
+    __h.load(200, 200, 'dotright');
+    const e = __h.edits(); e.spots.push({ id: 's', x: 0.75, y: 0.5, r: 0.06, dx: -0.2, dy: 0, feather: 0.5, opacity: 0, mode: 'heal' }); e.geometry.crop = { x: 0.5, y: 0, w: 0.5, h: 1 };
+    __h.render(e); const off = __h.px(0.5, 0.5)[0];
+    e.spots[0].opacity = 1; __h.render(e); return { off, on: __h.px(0.5, 0.5)[0] };
+  });
+  assert.ok(r.off < 20, `con opacidad 0 la mancha sigue (${r.off})`); near(r.on, 128, 6, 'tras retocar con recorte');
+});
+
+t('retoque: "reparar" respeta la luz de la zona y "clonar" copia tal cual', async () => {
+  const r = await run(() => {
+    __h.load(240, 100, 'gradot');
+    const mk = (mode) => { const e = __h.edits(); e.spots.push({ id: 's', x: 0.3, y: 0.5, r: 0.06, dx: 0.3, dy: 0, feather: 0.5, opacity: 1, mode }); __h.render(e); return { center: __h.px(0.3, 0.5)[0], around: __h.px(0.3, 0.2)[0] }; };
+    return { heal: mk('heal'), clone: mk('clone') };
+  });
+  const dh = Math.abs(r.heal.center - r.heal.around); const dc = Math.abs(r.clone.center - r.clone.around);
+  assert.ok(dh < 18, `reparar: diferencia con el entorno ${dh}`); assert.ok(dc > dh + 12, `clonar debería notarse más (${dc} vs ${dh})`);
 });
 
 t('las ediciones combinadas no producen NaN ni píxeles fuera de rango', async () => {

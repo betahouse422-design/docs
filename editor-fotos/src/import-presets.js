@@ -16,7 +16,7 @@ const COLORS = { red: 'Red', orange: 'Orange', yellow: 'Yellow', green: 'Green',
 
 // Claves de Lightroom que se conocen pero no tienen equivalente en esta app.
 const KNOWN_UNSUPPORTED = new Set([
-  'Dehaze', 'Texture', 'LuminanceSmoothing', 'ColorNoiseReduction', 'SharpenRadius', 'SharpnessRadius',
+  'SharpenRadius', 'SharpnessRadius',
   'SharpnessDetail', 'SharpnessEdgeMasking', 'SharpnessMasking', 'LuminanceNoiseReductionDetail',
   'GrainFrequency', 'GrainRoughness', 'PostCropVignetteMidpoint', 'PostCropVignetteFeather',
   'PostCropVignetteRoundness', 'PostCropVignetteStyle', 'PostCropVignetteHighlightContrast',
@@ -76,6 +76,10 @@ export function fromLightroomSettings(settings, name = 'Preset') {
   put('color.saturation', num('Saturation'), 'Saturación');
   put('color.vibrance', num('Vibrance'), 'Vibrance');
   put('detail.clarity', num('Clarity2012', 'Clarity'), 'Claridad');
+  put('detail.texture', num('Texture'), 'Textura');
+  put('detail.dehaze', num('Dehaze'), 'Quitar neblina');
+  put('detail.denoise', num('LuminanceSmoothing'), 'Ruido (luminosidad)');
+  put('detail.colorDenoise', num('ColorNoiseReduction'), 'Ruido (color)');
   const sharp = num('Sharpness');
   if (sharp !== undefined) put('detail.sharpness', (sharp * 100) / 150, 'Nitidez');
 
@@ -86,7 +90,8 @@ export function fromLightroomSettings(settings, name = 'Preset') {
     if (Number.isFinite(n)) {
       used.add('Temperature');
       const relative = typeof tRaw === 'string' ? /^[+-]/.test(tRaw.trim()) : Math.abs(n) < 2000;
-      put('color.temperature', relative ? n / 10 : (n - 5500) / 20, 'Temperatura');
+      // la sensibilidad de la app es 0.7/0.45 veces mayor que la usada al calibrar este mapeo
+      put('color.temperature', relative ? n / 15 : (n - 5500) / 30, 'Temperatura');
     }
   }
   put('color.tint', num('Tint'), 'Tinte');

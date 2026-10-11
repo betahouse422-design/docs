@@ -4,8 +4,11 @@ import { Engine } from './engine.js';
 import { EditStore } from './store.js';
 import {
   defaultEdits, SLIDER_GROUPS, HSL_RANGES, HSL_LABELS, getPath, applyPreset, STARTER_PRESETS,
-  newMask, MAX_MASKS, isNeutral, clone, CURVE_CHANNELS, migrate,
+  newMask, MAX_MASKS, isNeutral, clone, CURVE_CHANNELS, migrate, newSpot, MAX_SPOTS,
 } from './model.js';
+import {
+  averagePatchLinear, grayWorldLinear, whiteBalanceFromLinear, autoToneFromHistogram, applyAutoTone, chooseSpotSource,
+} from './auto.js';
 import { CurveEditor } from './curve-editor.js';
 import { Overlay } from './overlay.js';
 import { computeHistogram, drawHistogram, clipping } from './histogram.js';
@@ -25,7 +28,7 @@ const engine = new Engine(view);
 const store = new EditStore();
 const ui = {
   fileId: null, photoId: null, mode: 'edit', clip: null, loadToken: 0, fileName: 'foto', compare: false, cropMode: false, cropDraft: null, cropAspectId: 'free',
-  tab: 'adjust', hslRange: 'red', selMask: -1, presetSession: null, userPresets: [], selPresetId: null,
+  tab: 'adjust', hslRange: 'red', selMask: -1, pick: null, spotTool: false, selSpot: -1, presetSession: null, userPresets: [], selPresetId: null,
   presetSource: 'starter', presetQuery: '', presetGroup: '', presetLimit: 60, packs: {}, packLoading: false,
   renderQueued: false, histTimer: 0, saveTimer: 0,
 };
@@ -91,6 +94,10 @@ function buildAdjustTab() {
   root.replaceChildren();
   for (const g of SLIDER_GROUPS) {
     const d = el('details', { open: g.id === 'light' || g.id === 'color' }, el('summary', {}, g.title));
+    if (g.id === 'light') d.append(el('div', { class: 'row tools' }, el('button', { class: 'btn small', type: 'button', id: 'btnAutoTone', title: 'Calcula exposición, luces, sombras y contraste', onClick: autoTone }, '✦ Tono automático')));
+    if (g.id === 'color') d.append(el('div', { class: 'row tools' },
+      el('button', { class: 'btn small', type: 'button', id: 'btnWbPick', title: 'Toca algo que debería ser gris o blanco', onClick: startWbPicker }, '💧 Gotero'),
+      el('button', { class: 'btn small', type: 'button', id: 'btnWbAuto', title: 'Calcula el balance de blancos a partir de toda la foto', onClick: autoWhiteBalance }, '✦ Balance automático')));
     for (const s of g.sliders) d.append(pathSlider(s));
     root.append(d);
     if (g.id === 'color') root.append(buildHslSection());
@@ -560,6 +567,175 @@ function cancelPreset() {
   buildPresetsTab();
 }
 
+// ---------- herramientas automáticas y de retoque ----------
+
+// Pixeles de la vista SIN ajustes (conserva recorte y giro): para medir colores y tonos de la foto original.
+function neutralPixels(maxSide = 600) {
+  engine.render(store.get(), { maxW: maxSide, maxH: maxSide, original: true, upscale: false });
+  const px = engine.readPixels();
+  requestRender();
+  return px;
+}
+
+function lumaHistogram(data) {
+  const h = new Uint32Array(256);
+  for (let i = 0; i < data.length; i += 4) h[Math.round(0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2])]++;
+  return h;
+}
+
+function setWb(wb, label) {
+  store.update((e) => { e.color.temperature = wb.temperature; e.color.tint = wb.tint; });
+  store.commit();
+  toast(`${label}: temperatura ${wb.temperature > 0 ? '+' : ''}${wb.temperature}, tinte ${wb.tint > 0 ? '+' : ''}${wb.tint}`);
+}
+
+function startWbPicker() {
+  if (!engine.hasSource()) return;
+  ui.pick = ui.pick === 'wb' ? null : 'wb';
+  if (ui.pick) toast('Toca en la foto algo que debería ser gris o blanco');
+  updateOverlayMode(); overlay.draw();
+  $('#overlay').style.cursor = ui.pick ? 'crosshair' : 'default';
+}
+
+function pickWhiteBalance(u, v) {
+  const px = neutralPixels(700);
+  const avg = averagePatchLinear(px.data, px.width, px.height, u * px.width, v * px.height, Math.max(2, Math.round(px.width / 180)));
+  ui.pick = null; updateOverlayMode(); overlay.draw();
+  if (!(avg.r > 0.002 && avg.g > 0.002 && avg.b > 0.002)) { toast('Ese punto es casi negro: prueba con una zona más clara', true); return; }
+  setWb(whiteBalanceFromLinear(avg.r, avg.g, avg.b), 'Balance de blancos');
+}
+
+function autoWhiteBalance() {
+  if (!engine.hasSource()) return;
+  const px = neutralPixels(500);
+  const gw = grayWorldLinear(px.data, px.width, px.height);
+  if (!gw) { toast('No encontré tonos neutros para calcularlo. Usa el gotero.', true); return; }
+  setWb(whiteBalanceFromLinear(gw.r, gw.g, gw.b), 'Balance automático');
+}
+
+function autoTone() {
+  if (!engine.hasSource()) return;
+  const px = neutralPixels(500);
+  const tone = autoToneFromHistogram(lumaHistogram(px.data));
+  store.update((e) => { Object.assign(e.light, tone); });
+  store.commit();
+  toast('Tono automático aplicado. Afínalo con los deslizadores.');
+}
+
+// Auto (tono + balance) en varias fotos, con el motor de trabajo.
+async function autoMany() {
+  const ids = lib.selected.size ? [...lib.selected] : (ui.photoId ? [ui.photoId] : []);
+  if (!ids.length) return;
+  toast(`Calculando el automático de ${ids.length} foto${ids.length === 1 ? '' : 's'}…`);
+  const plan = new Map();
+  for (const id of ids) {
+    const rec = await storage.getPhoto(id);
+    if (!rec) continue;
+    const we = await loadWork(rec);
+    we.render(rec.edits, { maxW: 500, maxH: 500, original: true, upscale: false });
+    const px = we.readPixels();
+    const gw = grayWorldLinear(px.data, px.width, px.height);
+    plan.set(id, { wb: gw ? whiteBalanceFromLinear(gw.r, gw.g, gw.b) : null, tone: autoToneFromHistogram(lumaHistogram(px.data)) });
+  }
+  const n = await batchUpdate([...plan.keys()], (e, rec) => {
+    const p = plan.get(rec.id); const out = applyAutoTone(e, p.tone);
+    if (p.wb) { out.color.temperature = p.wb.temperature; out.color.tint = p.wb.tint; }
+    return out;
+  });
+  toast(`Automático aplicado en ${n} foto${n === 1 ? '' : 's'}`);
+}
+
+// ----- quitar manchas -----
+function cropGeo() {
+  const g = store.get().geometry; const [ow, oh] = orientedSize();
+  return { crop: g.crop, ow, oh };
+}
+function spotToView(sp) {
+  const { crop, ow, oh } = cropGeo();
+  return {
+    cx: (sp.x - crop.x) / crop.w, cy: (sp.y - crop.y) / crop.h, rw: sp.r / crop.w, rh: (sp.r * ow) / (crop.h * oh),
+    sx: (sp.x + sp.dx - crop.x) / crop.w, sy: (sp.y + sp.dy - crop.y) / crop.h, mode: sp.mode,
+  };
+}
+function spotsView() { return store.get().spots.map(spotToView); }
+
+function updateSpotView(i, patch, final) {
+  const sp = store.get().spots[i];
+  if (!sp) return;
+  const v = { ...spotToView(sp), ...patch };
+  const { crop } = cropGeo();
+  const c01 = (x) => Math.min(1, Math.max(0, x));
+  store.update((e) => {
+    const t = e.spots[i];
+    t.x = c01(crop.x + v.cx * crop.w); t.y = c01(crop.y + v.cy * crop.h);
+    t.r = Math.min(0.3, Math.max(0.003, v.rw * crop.w));
+    t.dx = Math.min(1, Math.max(-1, (v.sx - v.cx) * crop.w)); t.dy = Math.min(1, Math.max(-1, (v.sy - v.cy) * crop.h));
+  });
+  if (final) { store.commit(); buildRetouchTab(); }
+}
+
+function autoSpotSource(i) {
+  const sp = store.get().spots[i];
+  if (!sp) return;
+  const px = neutralPixels(700);
+  const v = spotToView(sp);
+  const rpx = Math.max(3, v.rw * px.width);
+  const s = chooseSpotSource(px.data, px.width, px.height, v.cx * px.width, v.cy * px.height, rpx);
+  const { crop } = cropGeo();
+  store.update((e) => { e.spots[i].dx = (s.dx / px.width) * crop.w; e.spots[i].dy = (s.dy / px.height) * crop.h; });
+}
+
+function addSpotView(u, v) {
+  const st = store.get();
+  if (st.geometry.straighten !== 0) { toast('Pon el enderezado en 0° para usar el retoque', true); return; }
+  if (st.spots.length >= MAX_SPOTS) { toast(`Máximo ${MAX_SPOTS} retoques por foto`, true); return; }
+  const { crop } = cropGeo();
+  const sp = newSpot(Math.min(1, Math.max(0, crop.x + u * crop.w)), Math.min(1, Math.max(0, crop.y + v * crop.h)), 0.02);
+  store.update((e) => { e.spots.push(sp); });
+  ui.selSpot = store.get().spots.length - 1;
+  autoSpotSource(ui.selSpot);
+  store.commit();
+  buildRetouchTab();
+}
+
+function buildRetouchTab() {
+  const root = $('#tabRetouch');
+  if (!root) return;
+  root.replaceChildren();
+  const spots = store.get().spots;
+  const blocked = store.get().geometry.straighten !== 0;
+  const toggle = el('button', { class: 'btn' + (ui.spotTool ? ' on' : ''), type: 'button', id: 'btnSpotTool', disabled: blocked,
+    onClick: () => { ui.spotTool = !ui.spotTool; ui.pick = null; updateOverlayMode(); overlay.draw(); buildRetouchTab(); } }, ui.spotTool ? 'Quitar manchas: activado' : 'Quitar manchas');
+  root.append(el('div', { class: 'row' }, toggle),
+    el('p', { class: 'hint' }, blocked ? 'Pon el enderezado en 0° (pestaña Recorte) para usar el retoque.'
+      : 'Toca una mancha o una migaja para quitarla. Arrastra el círculo punteado para elegir de dónde se copia la textura. El punto naranja cambia el tamaño.'));
+  if (!spots.length) { root.append(el('p', { class: 'hint' }, 'Aún no hay retoques en esta foto.')); return; }
+  const chips = el('div', { class: 'chips' }, spots.map((_, i) => {
+    const c = el('button', { class: 'chip' + (i === ui.selSpot ? ' on' : ''), type: 'button' }, `Retoque ${i + 1}`);
+    c.addEventListener('click', () => { ui.selSpot = i; buildRetouchTab(); overlay.draw(); });
+    return c;
+  }));
+  root.append(chips);
+  const sp = spots[ui.selSpot];
+  if (!sp) return;
+  const sl = (label, key, min, max, step, scale, unit) => sliderRow({
+    label, min, max, step, unit, neutral: key === 'r' ? 2 : 100,
+    get: () => (store.get().spots[ui.selSpot] ? store.get().spots[ui.selSpot][key] * scale : 0),
+    set: (v) => store.update((e) => { if (e.spots[ui.selSpot]) e.spots[ui.selSpot][key] = v / scale; }),
+    commit: () => store.commit(),
+  }).row;
+  const mode = el('select', { class: 'field', id: 'spotMode' }, el('option', { value: 'heal' }, 'Reparar (iguala la luz del entorno)'), el('option', { value: 'clone' }, 'Clonar (copia tal cual)'));
+  mode.value = sp.mode;
+  mode.addEventListener('change', () => { store.update((e) => { e.spots[ui.selSpot].mode = mode.value; }); store.commit(); });
+  root.append(
+    sl('Tamaño', 'r', 0.3, 15, 0.1, 100, '%'), sl('Difuminado', 'feather', 0, 100, 1, 100, ''), sl('Opacidad', 'opacity', 0, 100, 1, 100, ''),
+    el('label', { class: 'pfield' }, el('span', {}, 'Modo'), mode),
+    el('div', { class: 'row' },
+      el('button', { class: 'btn small', type: 'button', id: 'btnSpotAuto', onClick: () => { autoSpotSource(ui.selSpot); store.commit(); } }, 'Elegir origen automático'),
+      el('button', { class: 'btn small danger', type: 'button', id: 'btnSpotDel', onClick: () => { store.update((e) => { e.spots.splice(ui.selSpot, 1); }); store.commit(); ui.selSpot = Math.min(ui.selSpot, store.get().spots.length - 1); buildRetouchTab(); } }, 'Eliminar'),
+      el('button', { class: 'btn small danger', type: 'button', onClick: () => { store.update((e) => { e.spots = []; }); store.commit(); ui.selSpot = -1; buildRetouchTab(); } }, 'Quitar todos')));
+}
+
 // ---------- pestañas ----------
 function setTab(name) {
   ui.tab = name;
@@ -568,6 +744,8 @@ function setTab(name) {
   if (name === 'curves' && curveEditor) { curveEditor.setPoints(store.get().curves[curveEditor.channel]); curveEditor.draw(); }
   if (name === 'masks') { buildMasksTab(); }
   if (name !== 'geometry' && ui.cropMode) endCrop(false);
+  if (name !== 'retouch') ui.spotTool = false;
+  if (name === 'retouch') buildRetouchTab();
   updateOverlayMode(); overlay.draw();
 }
 
@@ -576,6 +754,8 @@ const overlay = new Overlay($('#overlay'), {
   getMode: () => {
     if (ui.compare || !engine.hasSource()) return 'none';
     if (ui.cropMode) return 'crop';
+    if (ui.pick === 'wb') return 'pick';
+    if (ui.spotTool && ui.tab === 'retouch') return 'spot';
     if (ui.tab === 'masks' && ui.selMask >= 0 && store.get().masks[ui.selMask]) return 'mask';
     return 'none';
   },
@@ -588,6 +768,12 @@ const overlay = new Overlay($('#overlay'), {
   },
   getOrientedSize: () => orientedSize(),
   getMask: () => store.get().masks[ui.selMask],
+  onPick: (u, v) => pickWhiteBalance(u, v),
+  getSpotsView: () => spotsView(),
+  selectedSpot: () => ui.selSpot,
+  selectSpot: (i) => { ui.selSpot = i; buildRetouchTab(); },
+  addSpotView: (u, v) => addSpotView(u, v),
+  updateSpotView: (i, patch, final) => updateSpotView(i, patch, final),
   updateMask: (patch, final) => {
     if (Object.keys(patch).length) store.update((e) => { Object.assign(e.masks[ui.selMask], patch); });
     if (final) { store.commit(); buildMasksTab(); }
@@ -603,6 +789,7 @@ function syncControls() {
   for (const c of Object.values(controls)) c.refresh();
   if (curveEditor) curveEditor.setPoints(store.get().curves[curveEditor.channel]);
   if (ui.tab === 'masks') buildMasksTab();
+  if (ui.tab === 'retouch') buildRetouchTab();
 }
 
 function updateButtons() {
@@ -709,7 +896,7 @@ async function selectPhoto(id) {
   if (token !== ui.loadToken) { if (bmp.close) bmp.close(); return; } // el usuario ya eligió otra
   engine.setSource(bmp); if (bmp.close) bmp.close();
   ui.photoId = id; ui.fileId = id; ui.fileName = rec.name;
-  ui.cropMode = false; ui.cropDraft = null; ui.selMask = -1; ui.presetSession = null; ui.selPresetId = null;
+  ui.cropMode = false; ui.cropDraft = null; ui.selMask = -1; ui.presetSession = null; ui.selPresetId = null; ui.pick = null; ui.spotTool = false; ui.selSpot = -1;
   $('#empty').hidden = true; document.body.classList.add('has-photos');
   store.load(rec.edits);
   lib.setCurrent(id); storage.kvSet('lastPhoto', id);
@@ -763,6 +950,7 @@ async function filmstripAction(act) {
   }
   if (act === 'selectAll') { lib.selectAll(lib.selected.size !== lib.items.length); return undefined; }
   if (act === 'remove') return removePhotos();
+  if (act === 'auto') return autoMany();
   return undefined;
 }
 
@@ -874,6 +1062,7 @@ function wire() {
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? store.redo() : store.undo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); }
+    else if (e.key === 'Escape' && (ui.pick || ui.spotTool)) { ui.pick = null; ui.spotTool = false; updateOverlayMode(); overlay.draw(); if (ui.tab === 'retouch') buildRetouchTab(); }
     else if (e.key === '\\') setCompare(true);
     else if (!mod && !e.altKey && e.key.toLowerCase() === 'a' && t.tagName !== 'INPUT') toggleApprove();
     else if (!mod && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && t.tagName !== 'INPUT' && ui.photoId) { const id = neighbor(lib.items, ui.photoId, e.key === 'ArrowRight' ? 1 : -1); if (id && id !== ui.photoId) selectPhoto(id); }

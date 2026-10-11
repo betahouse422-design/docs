@@ -378,7 +378,7 @@ test('importar XMP: mapea luz, color, HSL, gradación, efectos y curvas', () => 
   assert.equal(e.light.whites, 10); assert.equal(e.light.blacks, 15);
   assert.equal(e.detail.clarity, -15); assert.equal(e.color.saturation, -10); assert.equal(e.color.vibrance, 25);
   assert.equal(e.detail.sharpness, 20); // 30 de 150 -> 20 de 100
-  assert.equal(e.color.temperature, 40); assert.equal(e.color.tint, 5);
+  assert.ok(Math.abs(e.color.temperature - 26.667) < 0.01); assert.equal(e.color.tint, 5);
   assert.equal(e.color.hsl.green.h, 15); assert.equal(e.color.hsl.green.s, -20); assert.equal(e.color.hsl.orange.l, 5);
   assert.deepEqual([e.grading.shadows.hue, e.grading.shadows.sat], [220, 18]);
   assert.deepEqual([e.grading.highlights.hue, e.grading.highlights.sat], [45, 10]);
@@ -387,15 +387,16 @@ test('importar XMP: mapea luz, color, HSL, gradación, efectos y curvas', () => 
   assert.equal(e.curves.master.length, 3);
   assert.ok(Math.abs(e.curves.master[1][0] - 128 / 255) < 1e-3 && Math.abs(e.curves.master[1][1] - 110 / 255) < 1e-3);
   assert.equal(isNeutral({ ...defaultEdits(), curves: { ...defaultEdits().curves, r: e.curves.r } }), true, 'una curva identidad no cuenta');
-  assert.ok(r.report.ignored.includes('Dehaze'));
-  assert.ok(!r.report.ignored.includes('Texture'), 'los valores en 0 no se avisan');
+  assert.equal(e.detail.dehaze, -10); // ahora la app tiene "Quitar neblina"
+  assert.ok(!r.report.ignored.includes('Dehaze') && !r.report.ignored.includes('Texture'));
+  assert.ok(r.report.ignored.includes('GrainFrequency') === false);
   assert.ok(r.report.mapped.includes('Curva RGB'));
 });
 
 test('importar XMP: temperatura relativa (+400) y absoluta (6500)', () => {
-  assert.equal(fromLightroomSettings({ Temperature: '+400' }).edits.color.temperature, 40);
-  assert.equal(fromLightroomSettings({ Temperature: '-300' }).edits.color.temperature, -30);
-  assert.equal(fromLightroomSettings({ Temperature: '6500' }).edits.color.temperature, 50);
+  assert.ok(Math.abs(fromLightroomSettings({ Temperature: '+400' }).edits.color.temperature - 26.667) < 0.01);
+  assert.equal(fromLightroomSettings({ Temperature: '-300' }).edits.color.temperature, -20);
+  assert.ok(Math.abs(fromLightroomSettings({ Temperature: '6500' }).edits.color.temperature - 33.333) < 0.01);
   assert.equal(fromLightroomSettings({ Temperature: '5500' }).edits.color.temperature, 0);
 });
 
@@ -842,4 +843,121 @@ test('cropWarnings acepta una proporción distinta por foto', () => {
   const list = [ph('h', 'edited', 1.5), ph('v', 'edited', 0.75)];
   assert.deepEqual(cropWarnings(list, (p) => (p.aspect > 1 ? 1.5 : 0.75)), []);
   assert.deepEqual(cropWarnings(list, () => 1.5).map((x) => x.id), ['v']);
+});
+
+// ---------- ajustes automáticos ----------
+import { whiteBalanceFromLinear, averagePatchLinear, grayWorldLinear, srgbToLinear, percentile, autoToneFromHistogram, applyAutoTone, WB_TEMP, WB_TINT_G, WB_TINT_RB } from '../src/auto.js';
+
+test('balance de blancos: un gris no necesita corrección', () => {
+  assert.deepEqual(whiteBalanceFromLinear(0.2, 0.2, 0.2), { temperature: 0, tint: 0 });
+});
+
+test('balance de blancos: una luz cálida (más rojo) pide enfriar y una fría pide calentar', () => {
+  const warm = whiteBalanceFromLinear(0.3, 0.2, 0.12);
+  assert.ok(warm.temperature < -20, JSON.stringify(warm));
+  const cold = whiteBalanceFromLinear(0.12, 0.2, 0.3);
+  assert.ok(cold.temperature > 20, JSON.stringify(cold));
+  const green = whiteBalanceFromLinear(0.2, 0.28, 0.2); // dominante verde: pide magenta (tinte +)
+  assert.ok(green.tint > 15, JSON.stringify(green));
+});
+
+test('balance de blancos: es la inversa exacta del modelo del shader', () => {
+  // aplica el modelo a un gris con una dominante y comprueba que la solución lo devuelve a gris
+  for (const [r, g, b] of [[0.3, 0.2, 0.12], [0.15, 0.2, 0.26], [0.2, 0.25, 0.2], [0.25, 0.16, 0.2], [0.34, 0.21, 0.13]]) {
+    const { temperature, tint } = whiteBalanceFromLinear(r, g, b);
+    const T = temperature / 100; const N = tint / 100;
+    const r2 = r * 2 ** (WB_TEMP * T + WB_TINT_RB * N); const g2 = g * 2 ** (-WB_TINT_G * N); const b2 = b * 2 ** (-WB_TEMP * T + WB_TINT_RB * N);
+    assert.ok(Math.abs(r2 - g2) / g2 < 0.03 && Math.abs(b2 - g2) / g2 < 0.03, `${[r, g, b]} -> ${[r2, g2, b2]}`);
+  }
+});
+
+test('balance de blancos: casos sin información o extremos se limitan', () => {
+  assert.deepEqual(whiteBalanceFromLinear(0, 0, 0), { temperature: 0, tint: 0 });
+  const ext = whiteBalanceFromLinear(0.9, 0.05, 0.001);
+  assert.ok(Math.abs(ext.temperature) <= 100 && Math.abs(ext.tint) <= 100);
+  // tungsteno fuerte (típico de restaurantes): ahora SÍ cabe dentro del rango del control
+  const tung = whiteBalanceFromLinear(0.36, 0.25, 0.16);
+  assert.ok(tung.temperature > -100 && tung.temperature < -50, JSON.stringify(tung));
+});
+
+test('gotero y mundo gris: promedios en lineal', () => {
+  const w = 10; const h = 10; const d = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) { d[i * 4] = 200; d[i * 4 + 1] = 150; d[i * 4 + 2] = 100; d[i * 4 + 3] = 255; }
+  const p = averagePatchLinear(d, w, h, 5, 5, 2);
+  assert.ok(Math.abs(p.r - srgbToLinear(200)) < 1e-9 && Math.abs(p.b - srgbToLinear(100)) < 1e-9);
+  const tiny = new Uint8ClampedArray(4 * 4 * 4).fill(150);
+  assert.equal(grayWorldLinear(tiny, 4, 4), null, 'muy pocas muestras');
+  const big = new Uint8ClampedArray(300 * 300 * 4); for (let i = 0; i < 300 * 300; i++) { big[i * 4] = 180; big[i * 4 + 1] = 150; big[i * 4 + 2] = 120; big[i * 4 + 3] = 255; }
+  const g2 = grayWorldLinear(big, 300, 300);
+  assert.ok(g2 && g2.r > g2.g && g2.g > g2.b);
+});
+
+test('mundo gris ignora píxeles muy saturados y quemados', () => {
+  const w = 200; const h = 200; const d = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) { const sat = i % 2 === 0; d[i * 4] = sat ? 250 : 130; d[i * 4 + 1] = sat ? 20 : 128; d[i * 4 + 2] = sat ? 20 : 126; d[i * 4 + 3] = 255; }
+  const g = grayWorldLinear(d, w, h);
+  assert.ok(Math.abs(g.r - g.g) / g.g < 0.1, 'solo cuentan los tonos casi neutros');
+});
+
+function histOf(fn) { const h = new Uint32Array(256); for (let i = 0; i < 256; i++) h[i] = Math.round(fn(i / 255) * 1000); return h; }
+
+test('auto tono: sube una foto oscura y baja una clara', () => {
+  const dark = autoToneFromHistogram(histOf((x) => (x < 0.3 ? 1 : 0)));
+  assert.ok(dark.exposure > 0.5 && dark.shadows > 0, JSON.stringify(dark));
+  const bright = autoToneFromHistogram(histOf((x) => (x > 0.75 ? 1 : 0)));
+  assert.ok(bright.exposure < -0.5, JSON.stringify(bright)); // una foto muy clara se corrige bajando la exposición
+});
+
+test('auto tono: una foto equilibrada casi no cambia y el resultado siempre está en rango', () => {
+  const ok = autoToneFromHistogram(histOf((x) => 1));
+  assert.ok(Math.abs(ok.exposure) < 0.5 && ok.highlights >= -20 && ok.blacks === 0, JSON.stringify(ok));
+  for (const fn of [(x) => x * x, (x) => (1 - x) ** 3, (x) => (x > 0.98 ? 5 : 0.1), () => 0]) {
+    const t = autoToneFromHistogram(histOf(fn));
+    assert.ok(Math.abs(t.exposure) <= 2 && Math.abs(t.contrast) <= 100 && t.highlights <= 0 && t.shadows >= 0, JSON.stringify(t));
+    assert.ok(Object.values(t).every((v) => Number.isFinite(v) && !Object.is(v, -0)));
+  }
+  assert.equal(percentile(new Uint32Array(256), 0.5), 0);
+});
+
+test('applyAutoTone solo toca la luz', () => {
+  const e = defaultEdits(); e.color.saturation = 33;
+  const out = applyAutoTone(e, { exposure: 0.5, contrast: 5, highlights: -10, shadows: 10, whites: 0, blacks: -5 });
+  assert.equal(out.light.exposure, 0.5); assert.equal(out.color.saturation, 33); assert.equal(e.light.exposure, 0);
+});
+
+import { chooseSpotSource } from '../src/auto.js';
+import { newSpot, MAX_SPOTS } from '../src/model.js';
+
+test('retoque: el origen automático evita copiar de otro detalle', () => {
+  // fondo gris liso con una mancha negra en el centro y otra mancha negra a la derecha
+  const w = 200; const h = 200; const d = new Uint8ClampedArray(w * h * 4).fill(128);
+  for (let i = 0; i < w * h; i++) d[i * 4 + 3] = 255;
+  const dot = (cx, cy, rr) => { for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if ((x - cx) ** 2 + (y - cy) ** 2 < rr * rr) { const i = (y * w + x) * 4; d[i] = d[i + 1] = d[i + 2] = 0; } };
+  dot(100, 100, 6); dot(100 + 26, 100, 6); // otra mancha justo a la derecha, a 2.6 r
+  const s = chooseSpotSource(d, w, h, 100, 100, 8);
+  const sx = 100 + s.dx; const sy = 100 + s.dy;
+  assert.ok(Math.hypot(sx - 126, sy - 100) > 10, `no debe copiar de la otra mancha (${sx.toFixed(0)},${sy.toFixed(0)})`);
+  assert.ok(Math.hypot(s.dx, s.dy) >= 8 * 2.7, 'origen fuera de la mancha');
+});
+
+test('retoque: cerca del borde de la imagen elige un origen que cabe dentro', () => {
+  const w = 100; const h = 100; const d = new Uint8ClampedArray(w * h * 4).fill(150);
+  const s = chooseSpotSource(d, w, h, 5, 50, 4);
+  assert.ok(5 + s.dx >= 0 && 5 + s.dx < w && 50 + s.dy >= 0 && 50 + s.dy < h);
+  assert.deepEqual(chooseSpotSource(new Uint8ClampedArray(4 * 4 * 4), 4, 4, 2, 2, 50), { dx: 150, dy: 0 }, 'sin sitio: valor por defecto');
+});
+
+test('modelo: los puntos de retoque se sanean, se limitan y cuentan para "neutra"', () => {
+  const e = defaultEdits(); assert.equal(isNeutral(e), true);
+  e.spots.push(newSpot(0.5, 0.5)); assert.equal(isNeutral(e), false);
+  const m = migrate({ spots: [{ x: 5, y: -2, r: 99, dx: 9, dy: 'x', mode: 'zzz' }, null, 'basura', ...Array.from({ length: 30 }, () => newSpot(0.2, 0.2))] });
+  assert.equal(m.spots.length, MAX_SPOTS);
+  assert.deepEqual([m.spots[0].x, m.spots[0].y, m.spots[0].r, m.spots[0].dx, m.spots[0].mode], [1, 0, 0.3, 1, 'heal']);
+  assert.equal(migrate({}).spots.length, 0);
+});
+
+test('un preset no borra ni mezcla los puntos de retoque de la foto', () => {
+  const base = defaultEdits(); base.spots.push(newSpot(0.4, 0.4));
+  const out = applyPreset(base, STARTER_PRESETS[0].edits, 1);
+  assert.equal(out.spots.length, 1);
 });
