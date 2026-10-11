@@ -12,7 +12,8 @@ Código propio (HTML, CSS, JavaScript y WebGL2), sin dependencias de ejecución.
 - **Detalle y efectos:** claridad, nitidez, viñeta, grano, desvanecer.
 - **Recorte y geometría:** recorte con proporciones, girar 90°, espejo, enderezar.
 - **Máscaras locales:** hasta 4 (degradado y radial) con ajustes propios dentro de la zona.
-- **Presets:** 8 de arranque, guardar los tuyos, intensidad de 0 a 100 %, exportar e importar.
+- **Presets:** 8 de arranque, **449 presets de película y estilos** (paquete MIT incluido, con búsqueda y grupos), guardar los tuyos, intensidad de 0 a 100 %, exportar e importar.
+- **Importar presets de otros editores:** Lightroom (`.xmp`, `.lrtemplate`) y RawTherapee (`.pp3`, `.arp`). La conversión es aproximada.
 - **Comodidades:** deshacer y rehacer (Ctrl/Cmd+Z), antes y después (mantén pulsado), histograma con aviso de recortes, restablecer, retomar tus ajustes al reabrir la misma foto, exportar a JPEG, PNG o WebP a máxima resolución.
 
 ## Usarla en tu Mac
@@ -59,9 +60,11 @@ Si Chromium no está en la ruta por defecto: `CHROMIUM_PATH=/ruta/a/chrome npm t
 
 ```
 index.html  styles.css  manifest.webmanifest  sw.js
-src/        model.js curves.js geometry.js store.js   código puro (sin DOM)
+src/        model.js curves.js geometry.js store.js import-presets.js   código puro (sin DOM)
             engine.js shaders.js                        GPU (WebGL2)
             main.js overlay.js curve-editor.js histogram.js storage.js
+presets/    paquete de presets (MIT) y su aviso de licencia
+tools/      generador de paquetes e iconos
 tests/      pruebas
 icons/      iconos
 docs/       ARQUITECTURA.md y estudio/ (notas de estudio)
@@ -71,4 +74,6 @@ Lee `docs/ARQUITECTURA.md` para entender cómo está hecha y cómo añadir un aj
 
 ## Límites actuales
 
-Sin RAW, sin zoom sobre la foto, sin biblioteca de álbumes, sin vídeo. La lista de ideas pendientes, sacada del estudio, está en `docs/estudio/03_funciones_a_considerar.md`.
+Sin RAW, sin zoom sobre la foto, sin biblioteca de álbumes, sin vídeo, sin LUT 3D (`.cube`). Los presets importados se parecen al original pero no son idénticos: cada programa renderiza distinto y los ajustes sin equivalente (Dehaze, Textura, reducción de ruido...) se omiten.
+
+La lista de ideas pendientes, sacada del estudio, está en `docs/estudio/03_funciones_a_considerar.md`. De dónde salen los presets y bajo qué licencia: `presets/NOTICE.md` y `docs/estudio/04_fuentes_de_presets.md`.

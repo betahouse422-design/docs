@@ -355,3 +355,181 @@ test('aspectValue resuelve "original"', () => {
   assert.equal(aspectValue(null, 300, 200), null);
   assert.equal(aspectValue(2, 300, 200), 2);
 });
+
+// ---------- importador de presets (Lightroom, RawTherapee) ----------
+import { parseXmp, parseLrtemplate, parsePp3, parsePresetText, fromLightroomSettings } from '../src/import-presets.js';
+
+const XMP = `<x:xmpmeta xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:x="adobe:ns:meta/">
+ <rdf:RDF>
+ <rdf:Description rdf:about="" crs:PresetType="Normal" crs:UUID="ABC" crs:Name="Cálido &amp; suave" crs:Exposure2012="+0.50" crs:Contrast2012="-20" crs:Highlights2012="-40" crs:Shadows2012="+35" crs:Whites2012="+10" crs:Blacks2012="+15" crs:Clarity2012="-15" crs:Dehaze="-10" crs:Texture="0" crs:Saturation="-10" crs:Vibrance="+25" crs:Sharpness="30" crs:Temperature="+400" crs:Tint="+5" crs:HueAdjustmentGreen="+15" crs:SaturationAdjustmentGreen="-20" crs:LuminanceAdjustmentOrange="+5" crs:ColorGradeShadowHue="220" crs:ColorGradeShadowSat="18" crs:ColorGradeHighlightHue="45" crs:ColorGradeHighlightSat="10" crs:ColorGradeBalance="-20" crs:GrainAmount="30" crs:GrainSize="40" crs:PostCropVignetteAmount="-25">
+ <crs:Name><rdf:Alt><rdf:li xml:lang="x-default">Cálido &amp; suave</rdf:li></rdf:Alt></crs:Name>
+ <crs:Group><rdf:Alt><rdf:li xml:lang="x-default">Creativos</rdf:li></rdf:Alt></crs:Group>
+ <crs:ToneCurvePV2012><rdf:Seq><rdf:li>0, 20</rdf:li><rdf:li>128, 110</rdf:li><rdf:li>255, 255</rdf:li></rdf:Seq></crs:ToneCurvePV2012>
+ <crs:ToneCurvePV2012Red><rdf:Seq><rdf:li>0, 0</rdf:li><rdf:li>255, 255</rdf:li></rdf:Seq></crs:ToneCurvePV2012Red>
+ </rdf:Description></rdf:RDF></x:xmpmeta>`;
+
+test('importar XMP: mapea luz, color, HSL, gradación, efectos y curvas', () => {
+  const r = parseXmp(XMP, 'x');
+  const e = r.edits;
+  assert.equal(r.name, 'Cálido & suave');
+  assert.equal(r.group, 'Creativos');
+  assert.equal(e.light.exposure, 0.5);
+  assert.equal(e.light.contrast, -20); assert.equal(e.light.highlights, -40); assert.equal(e.light.shadows, 35);
+  assert.equal(e.light.whites, 10); assert.equal(e.light.blacks, 15);
+  assert.equal(e.detail.clarity, -15); assert.equal(e.color.saturation, -10); assert.equal(e.color.vibrance, 25);
+  assert.equal(e.detail.sharpness, 20); // 30 de 150 -> 20 de 100
+  assert.equal(e.color.temperature, 40); assert.equal(e.color.tint, 5);
+  assert.equal(e.color.hsl.green.h, 15); assert.equal(e.color.hsl.green.s, -20); assert.equal(e.color.hsl.orange.l, 5);
+  assert.deepEqual([e.grading.shadows.hue, e.grading.shadows.sat], [220, 18]);
+  assert.deepEqual([e.grading.highlights.hue, e.grading.highlights.sat], [45, 10]);
+  assert.equal(e.grading.balance, -20);
+  assert.equal(e.effects.grain, 30); assert.equal(e.effects.grainSize, 40); assert.equal(e.effects.vignette, -25);
+  assert.equal(e.curves.master.length, 3);
+  assert.ok(Math.abs(e.curves.master[1][0] - 128 / 255) < 1e-3 && Math.abs(e.curves.master[1][1] - 110 / 255) < 1e-3);
+  assert.equal(isNeutral({ ...defaultEdits(), curves: { ...defaultEdits().curves, r: e.curves.r } }), true, 'una curva identidad no cuenta');
+  assert.ok(r.report.ignored.includes('Dehaze'));
+  assert.ok(!r.report.ignored.includes('Texture'), 'los valores en 0 no se avisan');
+  assert.ok(r.report.mapped.includes('Curva RGB'));
+});
+
+test('importar XMP: temperatura relativa (+400) y absoluta (6500)', () => {
+  assert.equal(fromLightroomSettings({ Temperature: '+400' }).edits.color.temperature, 40);
+  assert.equal(fromLightroomSettings({ Temperature: '-300' }).edits.color.temperature, -30);
+  assert.equal(fromLightroomSettings({ Temperature: '6500' }).edits.color.temperature, 50);
+  assert.equal(fromLightroomSettings({ Temperature: '5500' }).edits.color.temperature, 0);
+});
+
+test('importar: blanco y negro con mezclador de grises', () => {
+  const e = fromLightroomSettings({ ConvertToGrayscale: 'True', GrayMixerRed: '+30', GrayMixerBlue: '-40', Contrast2012: '20' }).edits;
+  assert.equal(e.color.saturation, -100);
+  assert.equal(e.color.hsl.red.l, 30); assert.equal(e.color.hsl.blue.l, -40);
+  assert.equal(e.light.contrast, 20);
+  assert.equal(fromLightroomSettings({ Treatment: 'Monochrome' }).edits.color.saturation, -100);
+});
+
+test('importar: valores fuera de rango se limitan', () => {
+  const e = fromLightroomSettings({ Exposure2012: 99, Contrast2012: -500, GrainAmount: 900, HueAdjustmentRed: 300, ColorGradeShadowSat: 500, ColorGradeShadowHue: 900 }).edits;
+  assert.equal(e.light.exposure, 5); assert.equal(e.light.contrast, -100); assert.equal(e.effects.grain, 100);
+  assert.equal(e.color.hsl.red.h, 100); assert.equal(e.grading.shadows.sat, 100); assert.equal(e.grading.shadows.hue, 360);
+  for (const g of SLIDER_GROUPS) for (const s of g.sliders) {
+    const v = getPath(e, s.path); assert.ok(v >= s.min && v <= s.max, s.path);
+  }
+});
+
+const LRT = `s = {
+	id = "AAAA",
+	internalName = "Prueba 1",
+	title = "Prueba 1",
+	type = "Develop",
+	value = {
+		settings = {
+			-- comentario
+			Clarity2012 = 34,
+			ConvertToGrayscale = false,
+			CameraProfile = "Adobe Standard",
+			Saturation = -33,
+			Vibrance = 12,
+			HueAdjustmentRed = 16,
+			SplitToningShadowHue = 250,
+			SplitToningShadowSaturation = 18,
+			SplitToningBalance = 42,
+			ToneCurvePV2012 = {
+				0,
+				0,
+				64,
+				80,
+				255,
+				255,
+			},
+			ProcessVersion = "6.7",
+		},
+	},
+	version = 0,
+}`;
+
+test('importar .lrtemplate (Lua): lee números, textos, booleanos y listas', () => {
+  const r = parseLrtemplate(LRT);
+  assert.equal(r.name, 'Prueba 1');
+  const e = r.edits;
+  assert.equal(e.detail.clarity, 34); assert.equal(e.color.saturation, -33); assert.equal(e.color.vibrance, 12);
+  assert.equal(e.color.hsl.red.h, 16);
+  assert.deepEqual([e.grading.shadows.hue, e.grading.shadows.sat, e.grading.balance], [250, 18, 42]);
+  assert.equal(e.curves.master.length, 3);
+  assert.ok(Math.abs(e.curves.master[1][1] - 80 / 255) < 1e-3);
+});
+
+test('importar .lrtemplate: rechaza archivos dañados o sin ajustes', () => {
+  assert.throws(() => parseLrtemplate('s = { value = { settings = { A = '), /lrtemplate|Tabla|Valor/i);
+  assert.throws(() => parseLrtemplate('s = { title = "x" }'), /ajustes/);
+});
+
+const PP3 = `[Exposure]
+Auto=false
+Compensation=1
+Brightness=10
+Contrast=25
+Saturation=-5
+Curve=3;0;0;0.08;0;0.187;0.188;0.442;0.58;1;1;
+
+[Vibrance]
+Enabled=true
+Pastels=20
+Saturated=10
+
+[Shadows & Highlights]
+Enabled=true
+Highlights=30
+Shadows=40
+
+[Luminance Curve]
+Enabled=true
+LCurve=3;0;0;0.5;0.4;1;1;
+
+[White Balance]
+Enabled=true
+Temperature=5200
+`;
+
+test('importar .pp3 (RawTherapee): exposición, vibrance, luces/sombras y curva L', () => {
+  const r = parsePp3(PP3, 'Pop 1');
+  const e = r.edits;
+  assert.equal(r.name, 'Pop 1');
+  assert.equal(e.light.exposure, 1); assert.equal(e.light.brightness, 10); assert.equal(e.light.contrast, 25);
+  assert.equal(e.color.saturation, -5); assert.equal(e.color.vibrance, 15);
+  assert.equal(e.light.highlights, -30); assert.equal(e.light.shadows, 40);
+  assert.deepEqual(e.curves.master, [[0, 0], [0.5, 0.4], [1, 1]]);
+  assert.ok(r.report.ignored.includes('White Balance'));
+});
+
+test('importar .pp3: una sección desactivada no se aplica', () => {
+  const r = parsePp3('[Vibrance]\nEnabled=false\nPastels=50\nSaturated=50\n[Exposure]\nCompensation=0.5\n');
+  assert.equal(r.edits.color.vibrance, 0); assert.equal(r.edits.light.exposure, 0.5);
+});
+
+test('importar: rechaza formatos que no son lo que dicen', () => {
+  assert.throws(() => parseXmp('<x>hola</x>'), /XMP/);
+  assert.throws(() => parsePp3('esto no es ini'), /pp3/);
+  assert.throws(() => parsePresetText('foto.jpg', 'x'), /soportado/);
+});
+
+test('parsePresetText elige el lector por extensión y usa el nombre del archivo si falta título', () => {
+  assert.equal(parsePresetText('C:\\presets\\Mi Look.xmp', '<x:xmpmeta xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"><rdf:Description crs:Contrast2012="10"></rdf:Description></x:xmpmeta>').name, 'Mi Look');
+  assert.equal(parsePresetText('a/b/Perfil.pp3', '[Exposure]\nCompensation=1\n').name, 'Perfil');
+  assert.equal(parsePresetText('x.arp', '[Exposure]\nCompensation=0.5\n').edits.light.exposure, 0.5);
+});
+
+test('un preset importado se puede aplicar con intensidad', () => {
+  const p = parseXmp(XMP).edits;
+  const half = applyPreset(defaultEdits(), p, 0.5);
+  assert.equal(half.light.contrast, -10);
+  assert.equal(half.light.exposure, 0.25);
+});
+
+test('preset con curvas y gradación al 0 % deja las ediciones exactamente igual', () => {
+  const p = defaultEdits();
+  p.curves.master = [[0, 0], [0.25, 0.1], [0.75, 0.9], [1, 1]];
+  p.grading.shadows = { hue: 200, sat: 30 };
+  const base = defaultEdits(); base.light.exposure = 0.3;
+  assert.deepEqual(applyPreset(base, p, 0), base);
+  assert.notDeepEqual(applyPreset(base, p, 0.5), base);
+});

@@ -212,6 +212,7 @@ function normalizeMask(m) {
 
 export function applyPreset(current, preset, intensity = 1) {
   const k = Math.min(1, Math.max(0, intensity));
+  if (k === 0) return clone(current); // al 0 % no se toca nada (ni curvas ni matices)
   const neutral = defaultEdits();
   const p = migrate(preset);
   const out = clone(current);

@@ -261,6 +261,7 @@ t('presets propios: guardar, persistir tras recargar y borrar', async () => {
   await page.reload(); await page.waitForFunction(() => window.__appReady === true);
   await page.waitForTimeout(300);
   await page.click('#tabs button[data-tab="presets"]');
+  await page.selectOption('#presetSource', 'mine');
   assert.equal(await page.locator('.pitem', { hasText: 'Mi look' }).count(), 1, 'el preset no sobrevivió a la recarga');
   page.on('dialog', (d) => d.accept());
   await page.locator('.pitem', { hasText: 'Mi look' }).locator('.x').click();
@@ -282,6 +283,76 @@ t('las ediciones de una foto se guardan y se recuperan al reabrirla', async () =
     return window.__app.store.get().light.exposure;
   });
   assert.equal(result, 1.25);
+  await ctx.close();
+});
+
+t('paquete Lightroom abierto: carga, busca, filtra por grupo y aplica con intensidad', async () => {
+  const { page, ctx } = await newPage({ width: 1280, height: 800 });
+  await page.click('#btnSample'); await frame(page);
+  await page.click('#tabs button[data-tab="presets"]');
+  await page.selectOption('#presetSource', 'peva3');
+  await page.waitForSelector('.pitem');
+  const info = await page.evaluate(() => { const p = window.__app.ui.packs.peva3; return { n: p.presets.length, groups: p.groups.length, lic: p.source.license }; });
+  assert.ok(info.n >= 400, `pocos presets: ${info.n}`); assert.equal(info.lic, 'MIT'); assert.ok(info.groups >= 10);
+  assert.ok(await page.locator('.pitem').count() <= 60, 'la lista debe paginarse');
+  assert.ok(await page.locator('button', { hasText: 'Mostrar más' }).count() === 1);
+  assert.match(await page.locator('#presetListBox .hint').last().innerText(), /MIT/);
+  // búsqueda sin distinguir mayúsculas ni acentos
+  await page.fill('#presetSearch', 'portra');
+  const n1 = await page.locator('.pitem').count();
+  assert.ok(n1 >= 1 && n1 < 60, `búsqueda: ${n1}`);
+  assert.ok((await page.locator('.pitem').first().innerText()).toLowerCase().includes('portra'));
+  // filtro por grupo
+  await page.fill('#presetSearch', '');
+  const group = await page.evaluate(() => window.__app.ui.packs.peva3.groups[1]);
+  await page.selectOption('#presetGroup', group);
+  const names = await page.locator('.pitem').count();
+  const expected = await page.evaluate((g) => window.__app.ui.packs.peva3.presets.filter((p) => p.group === g).length, group);
+  assert.equal(names, Math.min(60, expected));
+  // aplicar uno con intensidad (quitando antes el filtro de grupo)
+  await page.selectOption('#presetGroup', '');
+  await page.fill('#presetSearch', 'portra');
+  await page.locator('.pitem').first().click(); await frame(page);
+  assert.equal(await page.evaluate(() => window.__app.store.dirty()), true, 'el preset debe cambiar las ediciones');
+  await setSlider(page, 'Intensidad', 0, '#tabPresets');
+  assert.equal(await page.evaluate(() => window.__app.store.dirty()), false, 'al 0 % no debe cambiar nada');
+  await page.locator('#tabPresets button', { hasText: 'Cancelar' }).click();
+  await shot(page, '08-paquete-presets');
+  await ctx.close();
+});
+
+t('importar archivos .xmp, .lrtemplate y .pp3 desde el selector', async () => {
+  const { page, ctx } = await newPage({ width: 1280, height: 800 });
+  await page.click('#btnSample'); await frame(page);
+  await page.click('#tabs button[data-tab="presets"]');
+  const xmp = '<x:xmpmeta xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" crs:Name="Look XMP" crs:Contrast2012="+25" crs:Saturation="-10" crs:Dehaze="+20"></rdf:Description></rdf:RDF></x:xmpmeta>';
+  const lrt = 's = {\n id = "X",\n title = "Look LRT",\n type = "Develop",\n value = {\n settings = {\n Clarity2012 = 40,\n Vibrance = 15,\n },\n },\n}';
+  const pp3 = '[Exposure]\nCompensation=0.7\nContrast=10\n';
+  await page.locator('#filePresets').setInputFiles([
+    { name: 'a.xmp', mimeType: 'application/octet-stream', buffer: Buffer.from(xmp) },
+    { name: 'b.lrtemplate', mimeType: 'application/octet-stream', buffer: Buffer.from(lrt) },
+    { name: 'Perfil RT.pp3', mimeType: 'application/octet-stream', buffer: Buffer.from(pp3) },
+  ]);
+  await page.waitForSelector('.pitem:has-text("Look XMP")');
+  assert.equal(await page.evaluate(() => window.__app.ui.presetSource), 'mine');
+  for (const n of ['Look XMP', 'Look LRT', 'Perfil RT']) assert.equal(await page.locator('.pitem', { hasText: n }).count(), 1, n);
+  const toast = await page.locator('#toast').innerText();
+  assert.match(toast, /3 preset/);
+  await page.locator('.pitem', { hasText: 'Look XMP' }).click(); await frame(page);
+  assert.equal(await page.evaluate(() => window.__app.store.get().light.contrast), 25);
+  assert.equal(await page.evaluate(() => window.__app.store.get().color.saturation), -10);
+  await page.locator('#tabPresets button', { hasText: 'Aplicar' }).click();
+  await ctx.close();
+});
+
+t('importar un archivo que no es un preset muestra un error y no rompe nada', async () => {
+  const { page, ctx } = await newPage({ width: 1280, height: 800 });
+  await page.click('#btnSample'); await frame(page);
+  await page.click('#tabs button[data-tab="presets"]');
+  await page.locator('#filePresets').setInputFiles([{ name: 'basura.xmp', mimeType: 'text/plain', buffer: Buffer.from('hola') }, { name: 'foto.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('x') }]);
+  await page.waitForFunction(() => document.getElementById('toast').textContent.includes('Problemas'));
+  assert.equal(await page.evaluate(() => window.__app.ui.userPresets.length), 0);
+  await setSlider(page, 'Brillo', 10, '#tabAdjust'); // la app sigue respondiendo
   await ctx.close();
 });
 

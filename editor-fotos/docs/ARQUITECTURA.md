@@ -20,6 +20,7 @@ main.js ──► store.js ──► model.js ◄── curves.js, geometry.js  
 | `store.js` | Estado actual + historial (deshacer/rehacer). Sin DOM. |
 | `engine.js` | Sube la foto como textura, prepara desenfoque y tabla de curvas, calcula la geometría y dibuja. |
 | `shaders.js` | GLSL: pase lineal y pase en espacio de visualización. |
+| `import-presets.js` | Convierte presets de Lightroom (.xmp, .lrtemplate) y RawTherapee (.pp3) a las ediciones de esta app. Sin DOM. |
 | `storage.js` | IndexedDB: ediciones por foto y presets propios. |
 | `main.js` | Construye el panel desde el modelo y conecta todo. |
 
@@ -48,7 +49,11 @@ Orden: voltear → girar 90° → recortar → enderezar (con zoom automático p
 
 ## Presets
 
-Un preset es un `Edits`. Aplicarlo con intensidad `k` **suma** a lo que ya tienes `(preset − neutro) × k`, limitado al rango de cada deslizador. Las curvas se mezclan hacia la identidad con `k` y, si ya tenías una curva propia en ese canal, se conserva la tuya. Un preset propio no guarda geometría ni máscaras (son de cada foto).
+Un preset es un `Edits`. Aplicarlo con intensidad `k` **suma** a lo que ya tienes `(preset − neutro) × k`, limitado al rango de cada deslizador. Las curvas se mezclan hacia la identidad con `k` y, si ya tenías una curva propia en ese canal, se conserva la tuya. Un preset propio no guarda geometría ni máscaras (son de cada foto). Con intensidad 0 % no se modifica nada.
+
+### Paquetes de presets
+
+Un paquete (`presets/*.json`, formato `editor-fotos-pack`) guarda cada preset solo con sus diferencias respecto al neutro y se descarga la primera vez que se elige. Lleva su origen, autor y licencia, que la interfaz muestra. Se generan con `tools/build-lightroom-pack.mjs`.
 
 ## Almacenamiento
 

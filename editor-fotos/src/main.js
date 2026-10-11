@@ -4,13 +4,14 @@ import { Engine } from './engine.js';
 import { EditStore } from './store.js';
 import {
   defaultEdits, SLIDER_GROUPS, HSL_RANGES, HSL_LABELS, getPath, applyPreset, STARTER_PRESETS,
-  newMask, MAX_MASKS, isNeutral, clone, CURVE_CHANNELS,
+  newMask, MAX_MASKS, isNeutral, clone, CURVE_CHANNELS, migrate,
 } from './model.js';
 import { CurveEditor } from './curve-editor.js';
 import { Overlay } from './overlay.js';
 import { computeHistogram, drawHistogram, clipping } from './histogram.js';
 import { ASPECTS, aspectValue, fitAspect } from './geometry.js';
 import * as storage from './storage.js';
+import { parsePresetText } from './import-presets.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 
@@ -33,6 +34,7 @@ const store = new EditStore();
 const ui = {
   fileId: null, fileName: 'foto', compare: false, cropMode: false, cropDraft: null, cropAspectId: 'free',
   tab: 'adjust', hslRange: 'red', selMask: -1, presetSession: null, userPresets: [], selPresetId: null,
+  presetSource: 'starter', presetQuery: '', presetGroup: '', presetLimit: 60, packs: {}, packLoading: false,
   renderQueued: false, histTimer: 0, saveTimer: 0,
 };
 const controls = {}; // path -> { setValue(v) }
@@ -375,16 +377,53 @@ function buildMasksTab() {
 }
 
 // ---------- pestaña Presets ----------
-function allPresets() { return [...STARTER_PRESETS, ...ui.userPresets]; }
+const PACKS = [{ id: 'peva3', label: 'Lightroom abiertos (MIT)', url: 'presets/lightroom-peva3-mit.json' }];
+const PRESET_PAGE = 60;
+const fold = (t) => String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-function buildPresetsTab() {
-  const root = $('#tabPresets');
-  root.replaceChildren();
+function findPreset(id) {
+  return STARTER_PRESETS.find((x) => x.id === id) || ui.userPresets.find((x) => x.id === id)
+    || Object.values(ui.packs).flatMap((p) => p.presets).find((x) => x.id === id);
+}
+
+async function loadPack(id) {
+  if (ui.packs[id]) return ui.packs[id];
+  const meta = PACKS.find((p) => p.id === id);
+  if (!meta) return null;
+  const res = await fetch(meta.url);
+  if (!res.ok) throw new Error('No se pudo cargar el paquete de presets');
+  const pack = await res.json();
+  if (pack.format !== 'editor-fotos-pack' || !Array.isArray(pack.presets)) throw new Error('El paquete de presets no es válido');
+  pack.presets = pack.presets.map((p) => ({ ...p, edits: migrate(p.edits), pack: id }));
+  ui.packs[id] = pack;
+  return pack;
+}
+
+// presets de la fuente elegida, ya filtrados por grupo y búsqueda
+function visiblePresets() {
+  const src = ui.presetSource;
+  let list = src === 'starter' ? STARTER_PRESETS : src === 'mine' ? ui.userPresets : (ui.packs[src] ? ui.packs[src].presets : []);
+  if (ui.presetGroup) list = list.filter((p) => p.group === ui.presetGroup);
+  const q = fold(ui.presetQuery.trim());
+  if (q) list = list.filter((p) => fold(p.name).includes(q) || fold(p.group || '').includes(q));
+  return list;
+}
+
+function renderPresetList() {
+  const box = $('#presetListBox');
+  if (!box) return;
+  box.replaceChildren();
+  const src = ui.presetSource;
+  if (src !== 'starter' && src !== 'mine' && !ui.packs[src]) {
+    box.append(el('p', { class: 'hint' }, ui.packLoading ? 'Cargando paquete…' : 'No se pudo cargar el paquete.'));
+    return;
+  }
+  const all = visiblePresets();
   const list = el('div', { class: 'list' });
-  for (const p of allPresets()) {
-    const b = el('button', { class: 'pitem' + (p.id === ui.selPresetId ? ' on' : ''), type: 'button' }, el('span', {}, p.name));
+  for (const p of all.slice(0, ui.presetLimit)) {
+    const b = el('button', { class: 'pitem' + (p.id === ui.selPresetId ? ' on' : ''), type: 'button', title: p.group || '' }, el('span', {}, p.name));
     b.addEventListener('click', () => selectPreset(p.id));
-    if (!p.builtin) {
+    if (!p.builtin && !p.pack) {
       const x = el('span', { class: 'x', title: 'Eliminar preset', role: 'button' }, '✕');
       x.addEventListener('click', async (ev) => {
         ev.stopPropagation();
@@ -398,7 +437,50 @@ function buildPresetsTab() {
     }
     list.append(b);
   }
-  root.append(list);
+  box.append(list);
+  if (!all.length) box.append(el('p', { class: 'hint' }, src === 'mine' ? 'Aún no tienes presets propios. Guarda uno o importa archivos.' : 'Ningún preset coincide con la búsqueda.'));
+  if (all.length > ui.presetLimit) {
+    box.append(el('button', { class: 'btn small', type: 'button', onClick: () => { ui.presetLimit += PRESET_PAGE; renderPresetList(); } }, `Mostrar más (${all.length - ui.presetLimit})`));
+  }
+  const pack = ui.packs[src];
+  if (pack) {
+    box.append(el('p', { class: 'hint' }, `${all.length} de ${pack.presets.length} presets. Fuente: `,
+      el('a', { href: pack.source.repo, target: '_blank', rel: 'noopener', style: 'color:inherit' }, pack.source.author + '/' + pack.source.repo.split('/').pop()),
+      ` · Licencia ${pack.source.license}. Conversión aproximada: se parecen al original, no son idénticos.`));
+  }
+}
+
+function buildPresetsTab() {
+  const root = $('#tabPresets');
+  root.replaceChildren();
+
+  // fuente, búsqueda y grupo
+  const sources = [{ id: 'starter', label: 'Arranque' }, { id: 'mine', label: `Mis presets (${ui.userPresets.length})` }, ...PACKS.map((p) => ({ id: p.id, label: p.label }))];
+  const sel = el('select', { class: 'field', id: 'presetSource', 'aria-label': 'Fuente de presets' }, sources.map((o) => el('option', { value: o.id, selected: o.id === ui.presetSource }, o.label)));
+  sel.addEventListener('change', async () => {
+    ui.presetSource = sel.value; ui.presetGroup = ''; ui.presetQuery = ''; ui.presetLimit = PRESET_PAGE;
+    if (PACKS.some((p) => p.id === sel.value) && !ui.packs[sel.value]) {
+      ui.packLoading = true; buildPresetsTab();
+      try { await loadPack(sel.value); } catch (err) { toast(err.message, true); }
+      ui.packLoading = false;
+    }
+    buildPresetsTab();
+  });
+  root.append(sel);
+
+  const pack = ui.packs[ui.presetSource];
+  const search = el('input', { class: 'field', type: 'search', id: 'presetSearch', placeholder: 'Buscar preset…', value: ui.presetQuery, style: 'margin-top:8px' });
+  search.addEventListener('input', () => { ui.presetQuery = search.value; ui.presetLimit = PRESET_PAGE; renderPresetList(); });
+  root.append(search);
+  if (pack && pack.groups && pack.groups.length) {
+    const g = el('select', { class: 'field', id: 'presetGroup', 'aria-label': 'Grupo', style: 'margin-top:8px' },
+      el('option', { value: '' }, `Todos los grupos (${pack.groups.length})`),
+      pack.groups.map((n) => el('option', { value: n, selected: n === ui.presetGroup }, n)));
+    g.addEventListener('change', () => { ui.presetGroup = g.value; ui.presetLimit = PRESET_PAGE; renderPresetList(); });
+    root.append(g);
+  }
+  root.append(el('div', { id: 'presetListBox', style: 'margin-top:8px' }));
+  renderPresetList();
 
   if (ui.presetSession) {
     const s = ui.presetSession;
@@ -408,7 +490,7 @@ function buildPresetsTab() {
       set: (v) => { s.intensity = v / 100; previewPreset(); },
       commit: () => {},
     });
-    root.append(el('div', { class: 'card' }, inten.row,
+    root.append(el('div', { class: 'card' }, el('div', { class: 'hint' }, s.preset.name), inten.row,
       el('div', { class: 'row' },
         el('button', { class: 'btn small primary', type: 'button', onClick: applyPresetSession }, 'Aplicar'),
         el('button', { class: 'btn small', type: 'button', onClick: cancelPreset }, 'Cancelar'))));
@@ -425,21 +507,47 @@ function buildPresetsTab() {
     edits.masks = [];
     const p = { id: 'u' + Date.now().toString(36), name: n, edits };
     await storage.savePreset(p);
-    ui.userPresets.push(p); name.value = ''; buildPresetsTab(); toast('Preset guardado');
+    ui.userPresets.push(p); name.value = ''; ui.presetSource = 'mine'; ui.presetQuery = ''; ui.presetGroup = '';
+    buildPresetsTab(); toast('Preset guardado');
   });
   const exp = el('button', { class: 'btn small', type: 'button' }, 'Exportar mis presets');
   exp.addEventListener('click', () => {
     if (!ui.userPresets.length) { toast('Aún no tienes presets propios', true); return; }
     download(new Blob([storage.presetsToJson(ui.userPresets)], { type: 'application/json' }), 'mis-presets.json');
   });
-  const imp = el('button', { class: 'btn small', type: 'button', onClick: () => $('#fileJson').click() }, 'Importar presets');
+  const imp = el('button', { class: 'btn small', type: 'button', id: 'btnImportPresets', onClick: () => $('#filePresets').click() }, 'Importar archivos…');
   root.append(el('div', { class: 'sub' }, 'Mis presets'), name, el('div', { class: 'row', style: 'margin-top:8px' }, save), el('div', { class: 'row', style: 'margin-top:8px' }, exp, imp),
-    el('p', { class: 'hint' }, 'Un preset suma sus ajustes a los que ya tienes. La intensidad lo mezcla de 0 a 100 %.'));
+    el('p', { class: 'hint' }, 'Importa presets de Lightroom (.xmp, .lrtemplate), RawTherapee (.pp3, .arp) o de esta app (.json). Un preset suma sus ajustes a los que ya tienes; la intensidad lo mezcla de 0 a 100 %.'));
+}
+
+async function importPresetFiles(files) {
+  let ok = 0; const notes = []; const errs = [];
+  for (const f of files) {
+    try {
+      const ext = (f.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+      const text = await f.text();
+      if (ext === 'json') {
+        const list = storage.presetsFromJson(text);
+        for (const p of list) { await storage.savePreset(p); ui.userPresets.push(p); }
+        ok += list.length; continue;
+      }
+      const r = parsePresetText(f.name, text);
+      r.edits.geometry = defaultEdits().geometry; r.edits.masks = [];
+      const p = { id: 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: r.name, edits: r.edits };
+      await storage.savePreset(p); ui.userPresets.push(p); ok++;
+      if (r.report.ignored.length) notes.push(`${r.name}: sin equivalente (${r.report.ignored.slice(0, 3).join(', ')}${r.report.ignored.length > 3 ? '…' : ''})`);
+      if (!r.report.mapped.length) errs.push(`${r.name}: no tenía ningún ajuste que esta app entienda`);
+    } catch (err) { errs.push(`${f.name}: ${err.message}`); }
+  }
+  ui.presetSource = 'mine'; ui.presetQuery = ''; ui.presetGroup = '';
+  buildPresetsTab();
+  const msg = `${ok} preset(s) importado(s)` + (notes.length ? `. ${notes.length === 1 ? notes[0] : `${notes.length} tenían ajustes sin equivalente`}` : '') + (errs.length ? `. Problemas: ${errs.slice(0, 2).join(' · ')}` : '');
+  toast(msg, errs.length > 0 && ok === 0);
 }
 
 function selectPreset(id) {
   if (!engine.hasSource()) { toast('Abre una foto primero', true); return; }
-  const p = allPresets().find((x) => x.id === id);
+  const p = findPreset(id);
   if (!p) return;
   if (!ui.presetSession) ui.presetSession = { base: clone(store.get()), intensity: 1, preset: p };
   ui.presetSession.preset = p; ui.selPresetId = id;
@@ -634,14 +742,9 @@ function wire() {
   $('#btnSample').addEventListener('click', sampleImage);
   fileInput.addEventListener('change', () => { openFile(fileInput.files[0]); fileInput.value = ''; });
 
-  $('#fileJson').addEventListener('change', async (ev) => {
-    const f = ev.target.files[0]; ev.target.value = '';
-    if (!f) return;
-    try {
-      const imported = storage.presetsFromJson(await f.text());
-      for (const p of imported) { await storage.savePreset(p); ui.userPresets.push(p); }
-      buildPresetsTab(); toast(`${imported.length} preset(s) importados`);
-    } catch (err) { toast(err.message, true); }
+  $('#filePresets').addEventListener('change', async (ev) => {
+    const files = [...ev.target.files]; ev.target.value = '';
+    if (files.length) await importPresetFiles(files);
   });
 
   $('#btnUndo').addEventListener('click', () => store.undo());

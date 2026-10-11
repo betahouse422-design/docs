@@ -6,7 +6,7 @@ const CACHE = `editor-fotos-${VERSION}`;
 const ASSETS = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'src/main.js', 'src/engine.js', 'src/shaders.js', 'src/model.js', 'src/curves.js', 'src/store.js',
-  'src/storage.js', 'src/histogram.js', 'src/curve-editor.js', 'src/overlay.js', 'src/geometry.js',
+  'src/storage.js', 'src/import-presets.js', 'src/histogram.js', 'src/curve-editor.js', 'src/overlay.js', 'src/geometry.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png',
 ];
 
