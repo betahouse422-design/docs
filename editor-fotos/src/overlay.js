@@ -2,6 +2,7 @@
 // Trabaja con coordenadas normalizadas (0..1, origen arriba-izquierda).
 
 import { hitHandle, resizeRect, moveRect } from './geometry.js';
+import { paintStrokes } from './brush.js';
 
 const ACCENT = '#ffb347';
 
@@ -9,6 +10,7 @@ export class Overlay {
   // hooks: getMode() -> 'none'|'crop'|'mask'|'pick'|'spot'
   //        crop: getCrop(), setCrop(rect, final), getAspect(), getOrientedSize()
   //        mask: getMask(), updateMask(patch, final)
+  //        brush (máscara de pincel): brushStart(x, y), brushMove(x, y), brushEnd(), brushInfo() -> { r, erase, strokes }
   //        pick: onPick(x, y)                        (gotero; coordenadas 0..1 de la vista)
   //        spot: getSpotsView() -> [{cx,cy,rw,rh,sx,sy,sel,mode}] (0..1 de la vista), selectedSpot(),
   //              addSpotView(x, y), updateSpotView(i, patch, final), selectSpot(i)
@@ -21,6 +23,7 @@ export class Overlay {
     canvas.addEventListener('pointermove', (e) => this._move(e));
     canvas.addEventListener('pointerup', (e) => this._up(e));
     canvas.addEventListener('pointercancel', (e) => this._up(e));
+    canvas.addEventListener('pointerleave', () => { if (!this.drag && this.cursor) { this.cursor = null; this.draw(); } });
   }
 
   sync(cssW, cssH) {
@@ -64,6 +67,15 @@ export class Overlay {
     } else if (mode === 'mask') {
       const m = this.h.getMask();
       if (!m) return;
+      if (m.type === 'brush') {
+        e.preventDefault();
+        this.drag = { kind: 'brush' };
+        this.cursor = p;
+        this.h.brushStart(p.x, p.y);
+        try { this.canvas.setPointerCapture(e.pointerId); } catch { /* sigue funcionando sin captura */ }
+        this.draw();
+        return;
+      }
       const handle = this._maskHandle(m, p, touch ? 26 : 16);
       if (!handle) return;
       this.drag = { kind: 'mask', handle, start: p, mask: JSON.parse(JSON.stringify(m)) };
@@ -74,6 +86,10 @@ export class Overlay {
 
   _move(e) {
     if (!this.drag) {
+      if (this.h.getMode() === 'mask') {
+        const m = this.h.getMask();
+        if (m && m.type === 'brush') { this.cursor = this._pt(e); this.draw(); }
+      }
       // cursor orientativo en escritorio
       if (this.h.getMode() === 'crop' && e.pointerType === 'mouse') {
         const p = this._pt(e);
@@ -85,6 +101,12 @@ export class Overlay {
       return;
     }
     const p = this._pt(e);
+    if (this.drag.kind === 'brush') {
+      this.cursor = p;
+      this.h.brushMove(p.x, p.y);
+      this.draw();
+      return;
+    }
     if (this.drag.kind === 'spot') {
       const d = this.drag; const sp = d.spot;
       const clamp = (v) => Math.min(1, Math.max(0, v));
@@ -118,6 +140,7 @@ export class Overlay {
     if (!this.drag) return;
     const d = this.drag;
     this.drag = null;
+    if (d.kind === 'brush') { this.h.brushEnd(); this.draw(); return; }
     if (d.kind === 'spot') { this.h.updateSpotView(d.i, {}, true); this.draw(); return; }
     if (d.kind === 'crop') this.h.setCrop(this.h.getCrop(), true);
     else this.h.updateMask({}, true);
@@ -246,10 +269,31 @@ export class Overlay {
     }
   }
 
+  // Pincel: la zona pintada se ve en rojo translúcido y un anillo marca el tamaño del pincel.
+  _drawBrush(ctx, W, H, m) {
+    const d = this.dpr || 1;
+    const info = this.h.brushInfo();
+    if (m.strokes && m.strokes.length) {
+      const off = this._off || (this._off = document.createElement('canvas'));
+      if (off.width !== W || off.height !== H) { off.width = W; off.height = H; }
+      const octx = off.getContext('2d');
+      paintStrokes(octx, m.strokes, W, H);
+      octx.globalCompositeOperation = 'source-in';
+      octx.fillStyle = 'rgb(255,70,70)'; octx.fillRect(0, 0, W, H);
+      octx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 0.45; ctx.drawImage(off, 0, 0); ctx.globalAlpha = 1;
+    }
+    if (this.cursor) {
+      ctx.lineWidth = 1.5 * d; ctx.strokeStyle = info.erase ? '#7cf' : ACCENT;
+      ctx.beginPath(); ctx.arc(this.cursor.x * W, this.cursor.y * H, Math.max(2, info.r * W), 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
   _drawMask(ctx, W, H) {
     const m = this.h.getMask();
     if (!m) return;
     const d = this.dpr || 1;
+    if (m.type === 'brush') { this._drawBrush(ctx, W, H, m); return; }
     const hs = this._maskHandles(m, W, H);
     ctx.lineWidth = 2 * d; ctx.strokeStyle = ACCENT; ctx.fillStyle = ACCENT;
     const dot = (p, r = 7) => { ctx.beginPath(); ctx.arc(p[0], p[1], r * d, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = d; ctx.stroke(); ctx.strokeStyle = ACCENT; ctx.lineWidth = 2 * d; };

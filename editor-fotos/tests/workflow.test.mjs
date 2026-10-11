@@ -562,6 +562,103 @@ t('ruido y neblina: los controles nuevos aparecen y modifican las ediciones', as
   await ctx.close();
 });
 
+t('bloom y halation: aparecen en Efectos y modifican las ediciones', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}]);
+  await setSlider(page, 'Bloom \\(brillo\\)', 35);
+  await setSlider(page, 'Halation \\(halo cálido\\)', 20);
+  const f = await page.evaluate(() => window.__app.store.get().effects);
+  assert.equal(f.bloom, 35); assert.equal(f.halation, 20);
+  await waitStatus(page, 0, 'edited');
+  await ctx.close();
+});
+
+t('pincel: pintar con el dedo/ratón, ajustar solo esa zona, goma y deshacer', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#808080' }]);
+  await page.click('#tabs button[data-tab="masks"]');
+  await page.locator('#tabMasks button', { hasText: '+ Pincel' }).click();
+  assert.equal(await page.evaluate(() => window.__app.store.get().masks[0].type), 'brush');
+  await setSlider(page, 'Exposición', 1.5, '#tabMasks');
+  const box = await page.locator('#overlay').boundingBox();
+  const at = (fx, fy) => [box.x + box.width * fx, box.y + box.height * fy];
+  const px = (fx, fy) => page.evaluate(([fx, fy]) => { const { width, height, data } = window.__app.engine.readPixels(); const i = (Math.floor(fy * height) * width + Math.floor(fx * width)) * 4; return data[i]; }, [fx, fy]);
+  await frame(page); await page.evaluate(() => window.__app.renderNow());
+  const base = await px(0.22, 0.2); // la foto de prueba es un degradado: se compara con su valor sin pintar
+  await page.mouse.move(...at(0.15, 0.2)); await page.mouse.down();
+  await page.mouse.move(...at(0.3, 0.2), { steps: 8 }); await page.mouse.up();
+  const n = await page.evaluate(() => window.__app.store.get().masks[0].strokes.length);
+  assert.equal(n, 1, 'un trazo');
+  await frame(page); await frame(page);
+  await page.evaluate(() => window.__app.renderNow());
+  const painted = await px(0.22, 0.2); const away = await px(0.8, 0.8);
+  assert.ok(painted > base + 25, `lo pintado debe verse más claro: ${painted} vs ${base}`);
+  await shot(page, '20-pincel');
+  // goma
+  await page.locator('#tabMasks label', { hasText: 'Goma' }).locator('input').check();
+  await page.mouse.move(...at(0.15, 0.2)); await page.mouse.down();
+  await page.mouse.move(...at(0.3, 0.2), { steps: 8 }); await page.mouse.up();
+  assert.equal(await page.evaluate(() => window.__app.store.get().masks[0].strokes.length), 2);
+  await page.evaluate(() => window.__app.renderNow());
+  near2(await px(0.22, 0.2), base, 4, 'la goma deja la zona como estaba');
+  // deshacer quita el último trazo (la goma) de un golpe
+  await page.evaluate(() => window.__app.store.undo());
+  assert.equal(await page.evaluate(() => window.__app.store.get().masks[0].strokes.length), 1);
+  // "Borrar todo el pincelado"
+  await page.locator('#tabMasks button', { hasText: 'Borrar todo el pincelado' }).click();
+  assert.equal(await page.evaluate(() => window.__app.store.get().masks[0].strokes.length), 0);
+  await ctx.close();
+});
+const near2 = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b}`);
+
+t('marca de agua al exportar una foto suelta: logo del restaurante en la esquina elegida', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#404040' }]);
+  // sin logo guardado, la casilla está deshabilitada
+  await page.click('#btnExport');
+  await page.waitForSelector('#exportDlg[open]');
+  assert.equal(await page.locator('#expWm').isDisabled(), true);
+  await page.keyboard.press('Escape');
+  // carga el logo en Imprimir
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('#fileLogo', { state: 'attached' });
+  await page.locator('#fileLogo').setInputFiles(file('logo.png', await png(page, 400, 160, '#202020', '#ffff00')));
+  await page.waitForFunction(() => window.__app.printUI.state.assets.logo);
+  await page.waitForTimeout(500);
+  await page.click('#modeSwitch button[data-mode="edit"]');
+  await page.waitForFunction(() => window.__app.engine.hasSource());
+  const yellow = (buf, region) => page.evaluate(async ({ b64, region }) => {
+    const bmp = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + b64)).blob());
+    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+    const [x0, y0, x1, y1] = region.map((v, i) => Math.floor(v * (i % 2 ? c.height : c.width)));
+    const d = g.getImageData(x0, y0, x1 - x0, y1 - y0).data; let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] > 180 && d[i + 1] > 180 && d[i + 2] < 90) n++;
+    return n;
+  }, { b64: buf.toString('base64'), region });
+  const exportFile = async (setup) => {
+    await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open]');
+    await setup();
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#expGo')]);
+    return readFileSync(await dl.path());
+  };
+  const without = await exportFile(async () => { if (await page.locator('#expWm').isChecked()) await page.locator('#expWm').uncheck(); });
+  assert.equal(await yellow(without, [0, 0, 1, 1]), 0, 'sin marca no hay amarillo');
+  const withWm = await exportFile(async () => {
+    assert.equal(await page.locator('#expWm').isDisabled(), false);
+    await page.locator('#expWm').check();
+    assert.equal(await page.locator('#expWmBox').isVisible(), true);
+    await page.selectOption('#expWmPos', 'bottom-right');
+  });
+  const inCorner = await yellow(withWm, [0.6, 0.7, 1, 1]); const elsewhere = await yellow(withWm, [0, 0, 0.5, 0.5]);
+  assert.ok(inCorner > 100, `el logo debe verse abajo a la derecha (${inCorner})`);
+  assert.equal(elsewhere, 0, 'y no en otra esquina');
+  // la elección se recuerda
+  await page.click('#btnExport'); await page.waitForSelector('#exportDlg[open]');
+  assert.equal(await page.locator('#expWm').isChecked(), true);
+  assert.equal(await page.locator('#expWmPos').inputValue(), 'bottom-right');
+  await ctx.close();
+});
+
 t('teléfono: el modo Imprimir y la tira de fotos caben y se pueden usar con el dedo', async () => {
   const { page, ctx } = await newPage({ width: 390, height: 844 }, { touch: true });
   await openPhotos(page, [{}, { bg: '#30a050' }]);

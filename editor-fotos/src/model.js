@@ -6,6 +6,7 @@
 // Excepciones: exposición (EV, -5..5), grano/nitidez/fade (0..100).
 
 import { normalizePoints } from './curves.js';
+import { normalizeStrokes } from './brush.js';
 
 export const EDITS_VERSION = 1;
 
@@ -38,7 +39,7 @@ export function defaultEdits() {
       balance: 0,
     },
     detail: { clarity: 0, sharpness: 0, texture: 0, dehaze: 0, denoise: 0, colorDenoise: 0 },
-    effects: { vignette: 0, grain: 0, grainSize: 30, fade: 0 },
+    effects: { vignette: 0, grain: 0, grainSize: 30, fade: 0, bloom: 0, halation: 0 },
     geometry: { crop: { x: 0, y: 0, w: 1, h: 1 }, rotate90: 0, straighten: 0, flipH: false, flipV: false },
     masks: [],
     spots: [],
@@ -88,6 +89,8 @@ export const SLIDER_GROUPS = [
   {
     id: 'effects', title: 'Efectos', sliders: [
       { path: 'effects.fade', label: 'Desvanecer', min: 0, max: 100, step: 1 },
+      { path: 'effects.bloom', label: 'Bloom (brillo)', min: 0, max: 100, step: 1 },
+      { path: 'effects.halation', label: 'Halation (halo cálido)', min: 0, max: 100, step: 1 },
       { path: 'effects.vignette', label: 'Viñeta', min: -100, max: 100, step: 1 },
       { path: 'effects.grain', label: 'Grano', min: 0, max: 100, step: 1 },
       { path: 'effects.grainSize', label: 'Tamaño del grano', min: 1, max: 100, step: 1, neutral: 30 },
@@ -202,15 +205,17 @@ export function defaultMaskAdjust() {
 
 export function newMask(type, id = String(Date.now() + Math.floor(Math.random() * 1000))) {
   const base = { id, type, invert: false, feather: 0.5, enabled: true, adjust: defaultMaskAdjust() };
+  if (type === 'brush') return { ...base, type: 'brush', strokes: [] };
   if (type === 'linear') return { ...base, x0: 0.5, y0: 0.35, x1: 0.5, y1: 0.75 };
   return { ...base, type: 'radial', cx: 0.5, cy: 0.5, rx: 0.3, ry: 0.3, angle: 0 };
 }
 
 function normalizeMask(m) {
-  const t = m && m.type === 'linear' ? 'linear' : 'radial';
+  const t = m && (m.type === 'linear' || m.type === 'brush') ? m.type : 'radial';
   const d = newMask(t, m && m.id ? String(m.id) : undefined);
   const out = { ...d, ...m, adjust: { ...d.adjust, ...(m && m.adjust) } };
   out.type = t;
+  if (t === 'brush') out.strokes = normalizeStrokes(m && m.strokes);
   return out;
 }
 
@@ -291,4 +296,5 @@ export const STARTER_PRESETS = [
   { id: 'pelicula', name: 'Película', edits: { effects: { fade: 22, grain: 32, grainSize: 36 }, color: { temperature: 10, saturation: -8 }, light: { contrast: 10, highlights: -14 } } },
   { id: 'bn', name: 'Blanco y negro', edits: { color: { saturation: -100 }, light: { contrast: 22 }, detail: { clarity: 14 } } },
   { id: 'dramatico', name: 'Dramático', edits: { light: { contrast: 30, highlights: -35, shadows: 25, blacks: -12 }, detail: { clarity: 30 }, effects: { vignette: -28 }, color: { saturation: -8 } } },
+  { id: 'resplandor', name: 'Resplandor (velas)', edits: { effects: { bloom: 38, halation: 28, fade: 8 }, color: { temperature: 8, saturation: 6 }, light: { highlights: -12, contrast: 6 } } },
 ].map((p) => ({ id: p.id, name: p.name, builtin: true, edits: migrate(p.edits) }));

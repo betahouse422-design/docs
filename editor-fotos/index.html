@@ -100,6 +100,24 @@
       <label id="expQualityRow">Calidad <output id="expQualityOut">92</output>
         <input id="expQuality" type="range" min="50" max="100" value="92">
       </label>
+      <label class="check"><input id="expWm" type="checkbox"> Poner el logo de un restaurante</label>
+      <div id="expWmBox" hidden>
+        <label>Restaurante <select id="expWmBrand"></select></label>
+        <label>Posición
+          <select id="expWmPos">
+            <option value="top-left">Arriba izquierda</option><option value="top-center">Arriba centro</option><option value="top-right">Arriba derecha</option>
+            <option value="center">Centro</option>
+            <option value="bottom-left">Abajo izquierda</option><option value="bottom-center">Abajo centro</option><option value="bottom-right">Abajo derecha</option>
+          </select>
+        </label>
+        <label>Tamaño <output id="expWmSizeOut">18</output> %
+          <input id="expWmSize" type="range" min="5" max="60" value="18">
+        </label>
+        <label>Opacidad <output id="expWmOpOut">85</output> %
+          <input id="expWmOp" type="range" min="10" max="100" value="85">
+        </label>
+        <p id="expWmNote" class="hint"></p>
+      </div>
       <p id="expInfo" class="hint"></p>
       <div class="row end">
         <button value="cancel" class="btn">Cancelar</button>

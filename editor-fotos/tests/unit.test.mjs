@@ -961,3 +961,42 @@ test('un preset no borra ni mezcla los puntos de retoque de la foto', () => {
   const out = applyPreset(base, STARTER_PRESETS[0].edits, 1);
   assert.equal(out.spots.length, 1);
 });
+
+test('bloom y halation: valores por defecto, neutralidad y migración', () => {
+  const d = defaultEdits();
+  assert.equal(d.effects.bloom, 0); assert.equal(d.effects.halation, 0);
+  const e = defaultEdits(); e.effects.bloom = 10;
+  assert.equal(isNeutral(e), false);
+  const m = migrate({ effects: { halation: 40 } });
+  assert.equal(m.effects.halation, 40); assert.equal(m.effects.bloom, 0);
+  const old = migrate({ effects: { vignette: -20 } }); // ediciones guardadas antes de existir bloom
+  assert.equal(old.effects.bloom, 0);
+});
+
+test('pincel: normaliza los trazos y limita su tamaño', async () => {
+  const { normalizeStrokes, MAX_STROKES, MAX_STROKE_POINTS } = await import('../src/brush.js');
+  const out = normalizeStrokes([
+    { r: 9, soft: -3, erase: 1, pts: [[-1, 2], [0.5, 0.5], ['x', null]] },
+    { r: 0.05, pts: [] },            // sin puntos: se descarta
+    null, { pts: 'no' },
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].r, 0.4); assert.equal(out[0].soft, 0); assert.equal(out[0].erase, true);
+  assert.deepEqual(out[0].pts[0], [0, 1]);
+  const many = Array.from({ length: MAX_STROKES + 30 }, () => ({ r: 0.05, soft: 0.5, pts: Array.from({ length: MAX_STROKE_POINTS + 50 }, () => [0.5, 0.5]) }));
+  const lim = normalizeStrokes(many);
+  assert.equal(lim.length, MAX_STROKES); assert.equal(lim[0].pts.length, MAX_STROKE_POINTS);
+  assert.deepEqual(normalizeStrokes('no es una lista'), []);
+});
+
+test('máscara de pincel: se crea, sobrevive a migrate y no mezcla campos de otras máscaras', () => {
+  const e = defaultEdits();
+  const m = newMask('brush'); m.strokes = [{ r: 0.05, soft: 0.4, erase: false, pts: [[0.1, 0.2], [0.3, 0.4]] }];
+  e.masks.push(m);
+  const back = migrate(JSON.parse(JSON.stringify(e)));
+  assert.equal(back.masks[0].type, 'brush');
+  assert.equal(back.masks[0].strokes.length, 1);
+  assert.equal(back.masks[0].cx, undefined);
+  assert.equal(migrate({ masks: [{ type: 'raro' }] }).masks[0].type, 'radial');
+  assert.equal(isNeutral(e), false);
+});

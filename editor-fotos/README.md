@@ -13,11 +13,13 @@ Código propio (HTML, CSS, JavaScript y WebGL2), sin dependencias de ejecución.
 - **Varias fotos a la vez:** tira de miniaturas con estados (pendiente, editada, aprobada), copiar y pegar ajustes, aplicar un preset o el modo automático a todas.
 - **Impresión:** restaurantes con logo y configuración propia, papel y 300 ppp, varias por hoja, marcos generados y **marcos PNG cargables** (la ventana se detecta sola), logo movible, texto con variables, PDF, JPEG/ZIP y diálogo de impresión.
 - **Automáticos:** balance de blancos con gotero y automático, tono automático.
+- **Máscaras:** degradado, radial y **pincel** con goma.
+- **Marca de agua:** exporta una foto suelta con el logo de un restaurante.
 - **Retoque:** quitar manchas y migajas (reparar o clonar).
 - **Luz:** exposición, brillo, contraste, luces, sombras, blancos, negros.
 - **Color:** temperatura, tinte, saturación, vibrance, color por rangos (8 colores: matiz, saturación, luminosidad), gradación de color en sombras, medios y luces.
 - **Curvas:** RGB y por canal, con puntos que se arrastran (táctil o ratón).
-- **Detalle y efectos:** claridad, textura, quitar neblina, nitidez, reducción de ruido (luminosidad y color), viñeta, grano, desvanecer.
+- **Detalle y efectos:** claridad, textura, quitar neblina, nitidez, reducción de ruido (luminosidad y color), bloom y halation, viñeta, grano, desvanecer.
 - **Recorte y geometría:** recorte con proporciones, girar 90°, espejo, enderezar.
 - **Máscaras locales:** hasta 4 (degradado y radial) con ajustes propios dentro de la zona.
 - **Presets:** 8 de arranque, **449 presets de película y estilos** (paquete MIT incluido, con búsqueda y grupos), guardar los tuyos, intensidad de 0 a 100 %, exportar e importar.
@@ -86,6 +88,6 @@ Lee `docs/ARQUITECTURA.md` para entender cómo está hecha y cómo añadir un aj
 
 ## Límites actuales
 
-Sin RAW, sin zoom sobre la foto, sin vídeo, sin LUT 3D (`.cube`), sin pincel de máscaras, sin sangrado ni marcas de corte para imprenta. Los presets importados se parecen al original pero no son idénticos: cada programa renderiza distinto y los ajustes sin equivalente (Dehaze, Textura, reducción de ruido...) se omiten.
+Sin RAW, sin zoom sobre la foto, sin vídeo, sin LUT 3D (`.cube`), sin máscaras con IA, sin sangrado ni marcas de corte para imprenta. Los presets importados se parecen al original pero no son idénticos: cada programa renderiza distinto y los ajustes sin equivalente (Dehaze, Textura, reducción de ruido...) se omiten.
 
 La lista de ideas pendientes, sacada del estudio, está en `docs/estudio/03_funciones_a_considerar.md`. De dónde salen los presets y bajo qué licencia: `presets/NOTICE.md` y `docs/estudio/04_fuentes_de_presets.md`.

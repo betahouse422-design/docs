@@ -11,8 +11,11 @@ Pestaña **Ajustes**:
 - **Tono automático** y **Balance automático** como punto de partida. En restaurantes con luz cálida o mezclada suele bastar con eso.
 - **Gotero** (💧): toca en la foto algo que debería ser gris o blanco (un mantel, un plato blanco) y corrige la dominante de color.
 - **Luz, color, color por rangos, gradación, curvas**: los ajustes de siempre.
+- **Bloom y halation** (en Efectos): bloom da un brillo suave alrededor de las luces (velas, lámparas, reflejos) y halation le añade el halo cálido de la película. Ve con poco: con 20–40 ya se nota. En presets está "Resplandor (velas)".
 - **Reducción de ruido** (luminosidad y color): para fotos con poca luz. Se nota más al exportar a tamaño completo que en la pantalla.
 - **Quitar neblina, claridad, textura, nitidez**: detalle.
+
+Pestaña **Máscaras**: ajustes solo en una zona. Hay degradado, radial y **pincel**: pulsa "+ Pincel", pinta sobre la foto la zona a cambiar (se ve en rojo) y mueve los deslizadores de exposición, color, etc. Con "Goma" quitas lo pintado. Si cambias el recorte después de pintar, repinta.
 
 Pestaña **Retoque**: toca una migaja o una mancha para quitarla. Arrastra el círculo punteado para elegir de dónde se copia la textura.
 
@@ -38,6 +41,8 @@ Pestaña **Presets**: 8 de arranque, 449 de película y estilos (con búsqueda),
 **Fotos a imprimir:** solo las aprobadas, todas, o las marcadas. Verás cuántas hojas salen y avisos si alguna foto se recorta mucho o tiene poca resolución para ese tamaño.
 **Recortar todas al marco:** ajusta de una vez el encuadre de todas a la forma de la ventana del marco (cada foto conserva su centro).
 
+**Foto suelta con logo:** en **Exportar** (modo Editar) activa "Poner el logo de un restaurante", elige el restaurante, la esquina, el tamaño y la opacidad. Sirve para mandar una foto por WhatsApp con el logo. Se recuerda tu elección.
+
 Salidas:
 - **Descargar PDF:** al tamaño exacto del papel. Es lo más fiable para una imprenta.
 - **Descargar JPEG:** uno por hoja (un ZIP si son varias).
@@ -53,5 +58,6 @@ Salidas:
 - Sin RAW (solo formatos que abre el navegador: JPEG, PNG, WebP; HEIC en Safari).
 - Sin gestión de perfiles de color de impresora: se trabaja en sRGB. Para un color crítico, pide una prueba a la imprenta.
 - Sin sangrado ni marcas de corte para imprenta.
-- Sin pincel de máscaras (hay degradado y radial) ni LUT 3D (`.cube`).
+- Sin máscaras con IA (cielo, piel, sujeto) ni LUT 3D (`.cube`).
+- Sin edición de metadatos ni integración directa con Apple Fotos (en el iPhone, "Abrir fotos" te deja elegirlas desde Fotos).
 - Sin zoom sobre la foto al editar.

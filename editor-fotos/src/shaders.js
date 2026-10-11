@@ -48,6 +48,7 @@ precision highp int;
 
 uniform sampler2D u_src;   // origen, lineal, con mipmaps
 uniform sampler2D u_blur;  // origen muy desenfocado (para claridad)
+uniform sampler2D u_brush; // pincel de máscaras: canal i = máscara activa i
 uniform sampler2D u_lut;   // 256x4: filas master, r, g, b (valor en .r)
 
 // geometría
@@ -71,7 +72,7 @@ uniform float u_maxLod;      // último nivel del mipmap del origen
 uniform int u_spotCount;
 uniform vec4 u_spotA[16];    // cx, cy (imagen girada, y arriba), radio (fracción del ancho), difuminado
 uniform vec4 u_spotB[16];    // dx, dy (hacia la zona de origen), opacidad, modo (0 = reparar, 1 = clonar)
-uniform float u_fade, u_vignette, u_grain, u_grainSize;
+uniform float u_fade, u_vignette, u_grain, u_grainSize, u_bloom, u_halation;
 uniform int u_hslOn;
 uniform vec3 u_hsl[8];
 uniform int u_curvesOn;
@@ -156,7 +157,10 @@ float maskWeight(int i, vec2 uv, float aspect) {
   vec4 C = u_mC[i];
   float feather = clamp(A.y, 0.0, 1.0);
   float w;
-  if (A.x < 0.5) {
+  if (A.x > 1.5) {
+    vec4 bm = texture(u_brush, vec2(uv.x, 1.0 - uv.y));
+    w = i == 0 ? bm.r : (i == 1 ? bm.g : (i == 2 ? bm.b : bm.a));
+  } else if (A.x < 0.5) {
     vec2 p0 = B.xy * vec2(aspect, 1.0);
     vec2 p1 = B.zw * vec2(aspect, 1.0);
     vec2 p = uv * vec2(aspect, 1.0);
@@ -410,6 +414,41 @@ void main() {
     if (i >= u_maskCount) break;
     float w = maskWeight(i, v_uv, aspect);
     if (w > 0.0) d = mix(d, applyLocal(d, i), w);
+  }
+
+  // bloom y halation: halo de las zonas muy claras. Se muestrean anillos alrededor del píxel en un nivel
+  // grueso del mipmap y solo cuentan las luces (cada muestra se filtra por su brillo antes de promediar).
+  if (u_bloom > 0.0 || u_halation > 0.0) {
+    float Lsrc = max(1.0 / u_srcTexel.x, 1.0 / u_srcTexel.y);
+    float glowLod = clamp(u_maxLod - 5.0, 0.0, u_maxLod);
+    vec3 acc = vec3(0.0);
+    float wsum = 1.0;
+    {
+      vec3 t0 = textureLod(u_src, su, glowLod).rgb;
+      acc += t0 * smoothstep(0.55, 0.95, luma(t0));
+    }
+    for (int k = 0; k < 24; k++) {
+      bool inner = k < 12;
+      float ring = inner ? 0.04 : 0.095;
+      float a = 6.2831853 * float(k) / 12.0 + (inner ? 0.0 : 0.26);
+      vec2 off = vec2(cos(a), sin(a)) * ring * Lsrc * u_srcTexel;
+      vec3 t = textureLod(u_src, su + off, glowLod).rgb;
+      float wt = inner ? 0.9 : 0.6;
+      acc += t * smoothstep(0.55, 0.95, luma(t)) * wt;
+      wsum += wt;
+    }
+    vec3 glow = lin2srgb(acc / wsum);
+    float glowL = luma(glow);
+    if (u_bloom > 0.0) {
+      vec3 add = glow * (u_bloom / 100.0) * 1.4;
+      d = 1.0 - (1.0 - d) * (1.0 - clamp(add, 0.0, 1.0)); // mezcla "screen": nunca quema de golpe
+    }
+    if (u_halation > 0.0) {
+      // la película refleja luz roja/naranja alrededor de las luces: tiñe el halo
+      vec3 tint = vec3(1.0, 0.38, 0.12);
+      d += tint * glowL * (u_halation / 100.0) * 1.0;
+    }
+    d = clamp(d, 0.0, 1.0);
   }
 
   // desvanecer (levanta los negros)

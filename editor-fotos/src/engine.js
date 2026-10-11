@@ -9,6 +9,7 @@
 
 import { VERT, DOWN_FRAG, BLUR_FRAG, MAIN_FRAG } from './shaders.js';
 import { buildLUT, LUT_SIZE } from './curves.js';
+import { strokesToAlpha } from './brush.js';
 import {
   HSL_RANGES, CURVE_CHANNELS, defaultEdits, curvesActive, hslActive, gradingActive,
 } from './model.js';
@@ -47,6 +48,8 @@ export class Engine {
     this.srcSize = [1, 1];
     this.blur = null; // { fboA, texA, fboB, texB, w, h }
     this.lutTex = this._makeLutTexture();
+    this.brushTex = this._makeBrushTexture();
+    this.brushKey = '';
     this.lutKey = '';
     this.edits = defaultEdits();
     this.lastSize = [1, 1];
@@ -157,6 +160,42 @@ export class Engine {
     return tex;
   }
 
+  // Un solo RGBA8: el canal i guarda el pincel de la máscara activa número i.
+  _makeBrushTexture() {
+    const gl = this.gl;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  // Rasteriza los pinceles solo cuando cambian (o cambia la proporción de la salida).
+  _updateBrush(masks, geo) {
+    const brushes = masks.map((m) => (m.type === 'brush' ? m.strokes || [] : null));
+    if (!brushes.some((b) => b && b.length)) { this.brushKey = ''; return; }
+    const aspect = geo.cw / geo.ch;
+    const long = 1024;
+    const W = Math.max(8, Math.round(aspect >= 1 ? long : long * aspect));
+    const H = Math.max(8, Math.round(aspect >= 1 ? long / aspect : long));
+    const key = `${W}x${H}|${JSON.stringify(brushes)}`;
+    if (key === this.brushKey) return;
+    this.brushKey = key;
+    const data = new Uint8Array(W * H * 4);
+    brushes.forEach((b, i) => {
+      if (!b || !b.length || i > 3) return;
+      const a = strokesToAlpha(b, W, H);
+      for (let p = 0; p < a.length; p++) data[p * 4 + i] = a[p];
+    });
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.brushTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  }
+
   _updateLut(edits) {
     const key = JSON.stringify(edits.curves);
     if (key === this.lutKey) return;
@@ -224,6 +263,8 @@ export class Engine {
     this._bindTex(0, this.srcTex);
     this._bindTex(1, this.blur.texA);
     this._bindTex(2, this.lutTex);
+    this._bindTex(3, this.brushTex);
+    gl.uniform1i(P.u('u_brush'), 3);
     gl.uniform1i(P.u('u_src'), 0);
     gl.uniform1i(P.u('u_blur'), 1);
     gl.uniform1i(P.u('u_lut'), 2);
@@ -278,6 +319,8 @@ export class Engine {
     gl.uniform1f(P.u('u_vignette'), e.effects.vignette);
     gl.uniform1f(P.u('u_grain'), e.effects.grain);
     gl.uniform1f(P.u('u_grainSize'), e.effects.grainSize);
+    gl.uniform1f(P.u('u_bloom'), e.effects.bloom);
+    gl.uniform1f(P.u('u_halation'), e.effects.halation);
 
     gl.uniform1i(P.u('u_hslOn'), hslActive(e) ? 1 : 0);
     const hsl = new Float32Array(24);
@@ -296,13 +339,16 @@ export class Engine {
 
     // máscaras
     const masks = e.masks.filter((m) => m.enabled !== false).slice(0, 4);
+    this._updateBrush(masks, geo);
+    this._bindTex(3, this.brushTex);
     gl.uniform1i(P.u('u_maskCount'), masks.length);
     const A = new Float32Array(16); const B = new Float32Array(16);
     const C = new Float32Array(16); const D = new Float32Array(16);
     masks.forEach((m, i) => {
-      A.set([m.type === 'linear' ? 0 : 1, m.feather, m.invert ? 1 : 0, 0], i * 4);
+      A.set([m.type === 'linear' ? 0 : m.type === 'brush' ? 2 : 1, m.feather, m.invert ? 1 : 0, 0], i * 4);
       // mismas coordenadas con origen arriba -> origen abajo (el ángulo cambia de signo)
       if (m.type === 'linear') B.set([m.x0, 1 - m.y0, m.x1, 1 - m.y1], i * 4);
+      else if (m.type === 'brush') B.set([0, 0, 0, 0], i * 4);
       else B.set([m.cx, 1 - m.cy, m.rx, m.ry], i * 4);
       C.set([(-(m.angle || 0) * Math.PI) / 180, m.adjust.exposure, m.adjust.contrast, m.adjust.saturation], i * 4);
       D.set([m.adjust.temperature, m.adjust.highlights, m.adjust.shadows, 0], i * 4);

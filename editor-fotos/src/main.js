@@ -21,6 +21,9 @@ import {
   statusAfterEdit, toggleApproved, pasteEdits, nextToReview, neighbor, visibleAspect, cropForAspect,
 } from './workflow.js';
 import { createPrintUI } from './print-ui.js';
+import { newStroke, MAX_STROKES, MAX_STROKE_POINTS } from './brush.js';
+import { watermarkBlob, loadImageAsset } from './compose.js';
+import { LOGO_POSITIONS } from './layout.js';
 
 // ---------- estado global ----------
 const view = $('#view');
@@ -28,7 +31,7 @@ const engine = new Engine(view);
 const store = new EditStore();
 const ui = {
   fileId: null, photoId: null, mode: 'edit', clip: null, loadToken: 0, fileName: 'foto', compare: false, cropMode: false, cropDraft: null, cropAspectId: 'free',
-  tab: 'adjust', hslRange: 'red', selMask: -1, pick: null, spotTool: false, selSpot: -1, presetSession: null, userPresets: [], selPresetId: null,
+  tab: 'adjust', brush: { r: 0.04, soft: 0.5, erase: false }, hslRange: 'red', selMask: -1, pick: null, spotTool: false, selSpot: -1, presetSession: null, userPresets: [], selPresetId: null,
   presetSource: 'starter', presetQuery: '', presetGroup: '', presetLimit: 60, packs: {}, packLoading: false,
   renderQueued: false, histTimer: 0, saveTimer: 0,
 };
@@ -287,6 +290,23 @@ function chooseAspect(id) {
   overlay.draw(); requestRender();
 }
 
+// ---------- pincel ----------
+function brushControls(m) {
+  const size = sliderRow({ label: 'Tamaño del pincel', min: 1, max: 30, step: 0.5, neutral: 4, unit: '%',
+    get: () => ui.brush.r * 100, set: (v) => { ui.brush.r = v / 100; overlay.draw(); }, commit: () => {} }).row;
+  const soft = sliderRow({ label: 'Suavidad del borde', min: 0, max: 100, step: 1, neutral: 50,
+    get: () => ui.brush.soft * 100, set: (v) => { ui.brush.soft = v / 100; }, commit: () => {} }).row;
+  const cb = el('input', { type: 'checkbox' }); cb.checked = ui.brush.erase;
+  cb.addEventListener('change', () => { ui.brush.erase = cb.checked; overlay.draw(); });
+  const clear = el('button', { class: 'btn small', type: 'button', onClick: () => {
+    store.update((ed) => { ed.masks[ui.selMask].strokes = []; }); store.commit(); overlay.draw();
+  } }, 'Borrar todo el pincelado');
+  return [
+    el('p', { class: 'hint' }, 'Pinta sobre la foto la zona a ajustar (se ve en rojo). Si cambias el recorte después, repinta.'),
+    size, soft, el('label', { class: 'check' }, cb, 'Goma (quitar zona pintada)'), clear,
+  ];
+}
+
 // ---------- pestaña Máscaras ----------
 function buildMasksTab() {
   const root = $('#tabMasks');
@@ -295,7 +315,7 @@ function buildMasksTab() {
   const list = el('div', { class: 'list' });
   e.masks.forEach((m, i) => {
     const b = el('button', { class: 'pitem' + (i === ui.selMask ? ' on' : ''), type: 'button' },
-      el('span', {}, `${i + 1} · ${m.type === 'linear' ? 'Degradado' : 'Radial'}${m.enabled === false ? ' (off)' : ''}`));
+      el('span', {}, `${i + 1} · ${m.type === 'linear' ? 'Degradado' : m.type === 'brush' ? 'Pincel' : 'Radial'}${m.enabled === false ? ' (off)' : ''}`));
     b.addEventListener('click', () => { ui.selMask = i; buildMasksTab(); updateOverlayMode(); overlay.draw(); });
     list.append(b);
   });
@@ -307,7 +327,8 @@ function buildMasksTab() {
   root.append(
     el('div', { class: 'row' },
       el('button', { class: 'btn small', type: 'button', onClick: add('linear') }, '+ Degradado'),
-      el('button', { class: 'btn small', type: 'button', onClick: add('radial') }, '+ Radial')),
+      el('button', { class: 'btn small', type: 'button', onClick: add('radial') }, '+ Radial'),
+      el('button', { class: 'btn small', type: 'button', onClick: add('brush') }, '+ Pincel')),
     list,
   );
   const m = e.masks[ui.selMask];
@@ -332,8 +353,8 @@ function buildMasksTab() {
     adj('exposure', 'Exposición', -3, 3, 0.01, 'EV'), adj('contrast', 'Contraste', -100, 100, 1),
     adj('highlights', 'Luces', -100, 100, 1), adj('shadows', 'Sombras', -100, 100, 1),
     adj('saturation', 'Saturación', -100, 100, 1), adj('temperature', 'Temperatura', -100, 100, 1),
-    el('div', { class: 'sub' }, 'Forma'),
-    field('feather', 'Difuminado', 0, 100, 1, 100),
+    el('div', { class: 'sub' }, m.type === 'brush' ? 'Pincel' : 'Forma'),
+    ...(m.type === 'brush' ? brushControls(m) : [field('feather', 'Difuminado', 0, 100, 1, 100)]),
     ...(m.type === 'radial' ? [field('angle', 'Ángulo', -90, 90, 1, 1)] : []),
     (() => {
       const cb = el('input', { type: 'checkbox' }); cb.checked = !!m.invert;
@@ -768,6 +789,24 @@ const overlay = new Overlay($('#overlay'), {
   },
   getOrientedSize: () => orientedSize(),
   getMask: () => store.get().masks[ui.selMask],
+  brushInfo: () => ({ r: ui.brush.r, erase: ui.brush.erase }),
+  brushStart: (x, y) => {
+    store.update((ed) => { const m = ed.masks[ui.selMask]; if (m.strokes.length < MAX_STROKES) m.strokes.push(newStroke(x, y, ui.brush.r, ui.brush.soft, ui.brush.erase)); });
+  },
+  brushMove: (x, y) => {
+    store.update((ed) => {
+      const st = ed.masks[ui.selMask].strokes; const s = st[st.length - 1];
+      if (!s) return;
+      const q = s.pts[s.pts.length - 1];
+      if (Math.hypot(x - q[0], y - q[1]) < s.r * 0.18) return; // puntos muy juntos no aportan
+      if (s.pts.length >= MAX_STROKE_POINTS) { // trazo lleno: sigue en uno nuevo con el mismo estilo
+        if (st.length < MAX_STROKES) st.push({ r: s.r, soft: s.soft, erase: s.erase, pts: [q, [x, y]] });
+        return;
+      }
+      s.pts.push([x, y]);
+    });
+  },
+  brushEnd: () => { store.commit(); },
   onPick: (u, v) => pickWhiteBalance(u, v),
   getSpotsView: () => spotsView(),
   selectedSpot: () => ui.selSpot,
@@ -1006,7 +1045,30 @@ function openExportDialog() {
   const scale = Math.min(1, engine.maxRender / Math.max(g.cw, g.ch));
   $('#expInfo').textContent = `Tamaño: ${Math.round(g.cw * scale)} × ${Math.round(g.ch * scale)} px`;
   $('#expQualityRow').hidden = $('#expType').value === 'image/png';
-  dlg.showModal();
+  openWatermarkOptions().then(() => dlg.showModal());
+}
+
+// Marca de agua: usa el logo de un restaurante ya configurado en Imprimir.
+const WM_DEFAULT = { on: false, brandId: null, pos: 'bottom-right', size: 18, opacity: 85 };
+async function openWatermarkOptions() {
+  let wm = { ...WM_DEFAULT };
+  try { wm = { ...wm, ...((await storage.kvGet('watermark')) || {}) }; } catch { /* sin preferencias */ }
+  const brands = (await storage.listBrands()).filter((b) => b.logoId);
+  const sel = $('#expWmBrand');
+  sel.replaceChildren(...brands.map((b) => el('option', { value: b.id }, b.name)));
+  if (brands.some((b) => b.id === wm.brandId)) sel.value = wm.brandId;
+  $('#expWm').checked = wm.on && brands.length > 0;
+  $('#expWm').disabled = brands.length === 0;
+  $('#expWmPos').value = wm.pos; $('#expWmSize').value = wm.size; $('#expWmOp').value = wm.opacity;
+  $('#expWmSizeOut').textContent = wm.size; $('#expWmOpOut').textContent = wm.opacity;
+  $('#expWmNote').textContent = brands.length ? '' : 'Primero carga el logo de un restaurante en Imprimir.';
+  $('#expWmBox').hidden = !($('#expWm').checked) && brands.length > 0;
+  if (!brands.length) $('#expWmBox').hidden = false;
+}
+
+function readWatermark() {
+  return { on: $('#expWm').checked, brandId: $('#expWmBrand').value || null, pos: $('#expWmPos').value,
+    size: Number($('#expWmSize').value), opacity: Number($('#expWmOp').value) };
 }
 
 async function doExport() {
@@ -1017,13 +1079,26 @@ async function doExport() {
   const { blob, width, height } = await engine.exportBlob(store.get(), { type, quality });
   requestRender();
   if (!blob) { toast('No se pudo exportar', true); return; }
+  const wm = readWatermark();
+  try { await storage.kvSet('watermark', wm); } catch { /* preferencia opcional */ }
+  let out = blob;
+  if (wm.on && wm.brandId) {
+    try {
+      const brand = (await storage.listBrands()).find((b) => b.id === wm.brandId);
+      const rec = brand && brand.logoId ? await storage.getAsset(brand.logoId) : null;
+      if (!rec) throw new Error('sin logo');
+      const logoAsset = await loadImageAsset(rec.blob);
+      const [px, py] = LOGO_POSITIONS[wm.pos] || LOGO_POSITIONS['bottom-right'];
+      out = (await watermarkBlob(blob, logoAsset, { x: px, y: py, widthPct: wm.size, opacity: wm.opacity / 100, plate: false, plateColor: '#ffffff' }, { type, quality })) || blob;
+    } catch (err) { console.error(err); toast('No se pudo poner el logo; se guarda sin marca', true); }
+  }
   const ext = type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : 'jpg';
   const filename = `${ui.fileName}-editada.${ext}`;
-  const file = new File([blob], filename, { type });
+  const file = new File([out], filename, { type });
   if (navigator.canShare && navigator.canShare({ files: [file] }) && /iPhone|iPad|Android/i.test(navigator.userAgent)) {
     try { await navigator.share({ files: [file], title: filename }); toast(`Compartido (${width}×${height})`); return; } catch { /* cancelado: descargar */ }
   }
-  download(blob, filename);
+  download(out, filename);
   toast(`Guardado ${filename} (${width}×${height})`);
 }
 
@@ -1046,6 +1121,9 @@ function wire() {
   $('#btnExport').addEventListener('click', () => (ui.mode === 'print' ? printUI.exportPdf() : openExportDialog()));
   $('#modeSwitch').addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (b) setMode(b.dataset.mode); });
   $('#expType').addEventListener('change', () => { $('#expQualityRow').hidden = $('#expType').value === 'image/png'; });
+  $('#expWm').addEventListener('change', () => { $('#expWmBox').hidden = !$('#expWm').checked; });
+  $('#expWmSize').addEventListener('input', () => { $('#expWmSizeOut').textContent = $('#expWmSize').value; });
+  $('#expWmOp').addEventListener('input', () => { $('#expWmOpOut').textContent = $('#expWmOp').value; });
   $('#expQuality').addEventListener('input', () => { $('#expQualityOut').textContent = $('#expQuality').value; });
   $('#exportDlg').addEventListener('close', () => { if ($('#exportDlg').returnValue === 'go') doExport(); });
 

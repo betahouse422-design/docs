@@ -28,6 +28,7 @@ await page.waitForFunction(() => window.__ready === true, null, { timeout: 15000
 // ---- ayudantes dentro de la página ----
 await page.evaluate(() => {
   const { engine, model } = window.__t;
+  window.model = model;
   const H = {};
   H.edits = () => model.defaultEdits();
   H.load = (w, h, kind) => {
@@ -69,6 +70,10 @@ await page.evaluate(() => {
       ctx.fillStyle = 'rgb(0,0,0)'; ctx.beginPath(); ctx.arc(w * (kind === 'dot' ? 0.5 : 0.3), h * 0.5, w * 0.025, 0, Math.PI * 2); ctx.fill();
     }
     if (kind === 'dotright') { ctx.fillStyle = 'rgb(128,128,128)'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = 'rgb(0,0,0)'; ctx.beginPath(); ctx.arc(w * 0.75, h * 0.5, w * 0.025, 0, Math.PI * 2); ctx.fill(); }
+    if (kind === 'lamp') { // fondo oscuro con una "luz" blanca en el centro
+      ctx.fillStyle = 'rgb(30,30,30)'; ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = 'rgb(255,255,255)'; ctx.fillRect(w * 0.42, h * 0.42, w * 0.16, h * 0.16);
+    }
     engine.setSource(c);
   };
   H.std = (x0, y0, x1, y1, ch = 0) => {
@@ -461,6 +466,48 @@ t('las ediciones combinadas no producen NaN ni píxeles fuera de rango', async (
     __h.render(e); return __h.px(0.5, 0.5);
   });
   p.forEach((v) => assert.ok(Number.isInteger(v) && v >= 0 && v <= 255));
+});
+
+t('bloom y halation: el brillo se extiende alrededor de las luces y no toca lo lejano', async () => {
+  const r = await run(() => {
+    __h.load(256, 256, 'lamp');
+    const base = __h.edits(); __h.render(base);
+    const near0 = __h.px(0.65, 0.5); const far0 = __h.px(0.05, 0.05);
+    const e = __h.edits(); e.effects.bloom = 80; __h.render(e);
+    const nearB = __h.px(0.65, 0.5); const farB = __h.px(0.05, 0.05); const lamp = __h.px(0.5, 0.5);
+    const h = __h.edits(); h.effects.halation = 80; __h.render(h);
+    const nearH = __h.px(0.65, 0.5);
+    return { near0, far0, nearB, farB, lamp, nearH };
+  });
+  assert.ok(r.nearB[0] > r.near0[0] + 8, `bloom: junto a la luz ${r.nearB[0]} vs ${r.near0[0]}`);
+  assert.ok(r.farB[0] <= r.far0[0] + 3, `bloom: el fondo lejano no debe cambiar (${r.farB[0]} vs ${r.far0[0]})`);
+  assert.ok(r.lamp.every((v) => v >= 250), 'la luz sigue blanca');
+  assert.ok(r.nearH[0] - r.nearH[2] > 12, `halation tiñe de cálido: rojo ${r.nearH[0]}, azul ${r.nearH[2]}`);
+});
+
+t('pincel: solo cambia lo pintado; la goma lo quita', async () => {
+  const r = await run(() => {
+    __h.load(200, 100, 'gray');
+    const mk = (strokes) => {
+      const e = __h.edits();
+      const m = model.newMask('brush'); m.adjust.exposure = 1.5; m.strokes = strokes; e.masks.push(m); return e;
+    };
+    const paint = { r: 0.12, soft: 0.2, erase: false, pts: [[0.2, 0.5], [0.25, 0.5], [0.3, 0.5]] };
+    __h.render(mk([paint]));
+    const painted = __h.px(0.25, 0.5)[0]; const away = __h.px(0.8, 0.5)[0]; const above = __h.px(0.25, 0.05)[0];
+    const erase = { r: 0.12, soft: 0.2, erase: true, pts: [[0.2, 0.5], [0.25, 0.5], [0.3, 0.5]] };
+    __h.render(mk([paint, erase])); const erased = __h.px(0.25, 0.5)[0];
+    __h.render(mk([])); const none = __h.px(0.25, 0.5)[0];
+    const flip = __h.edits(); const fm = model.newMask('brush'); fm.adjust.exposure = 1.5; fm.invert = true; fm.strokes = [paint]; flip.masks.push(fm);
+    __h.render(flip); const inv = { inside: __h.px(0.25, 0.5)[0], outside: __h.px(0.8, 0.5)[0] };
+    return { painted, away, above, erased, none, inv };
+  });
+  assert.ok(r.painted > 180, `zona pintada aclarada: ${r.painted}`);
+  near(r.away, 128, 3, 'zona sin pintar');
+  near(r.above, 128, 3, 'arriba del trazo (y no se invierte)');
+  near(r.erased, 128, 3, 'tras la goma');
+  near(r.none, 128, 3, 'sin trazos no hay efecto');
+  assert.ok(r.inv.outside > 180 && Math.abs(r.inv.inside - 128) < 4, `invertir: dentro ${r.inv.inside}, fuera ${r.inv.outside}`);
 });
 
 for (const [name, fn] of tests) {

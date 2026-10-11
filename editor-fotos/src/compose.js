@@ -179,6 +179,19 @@ export function detectWindow(asset) {
   return findFrameWindow(ctx.getImageData(0, 0, w, h).data, w, h);
 }
 
+// Pone el logo sobre una foto suelta (exportación individual). `logo` = { enabled, x, y, widthPct, opacity, plate, plateColor }.
+// Devuelve un Blob del tipo pedido, o null si no se pudo codificar.
+export async function watermarkBlob(blob, logoAsset, logo, { type = 'image/jpeg', quality = 0.92 } = {}) {
+  const base = await loadImageAsset(blob);
+  const c = document.createElement('canvas');
+  c.width = base.w; c.height = base.h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(base.img, 0, 0);
+  // el logo se dimensiona respecto a la foto; el relleno mínimo escala con ella
+  drawLogo(ctx, { logo: { ...logo, enabled: true } }, { x: 0, y: 0, w: c.width, h: c.height }, { logo: logoAsset }, 300);
+  return new Promise((res) => c.toBlob(res, type, quality));
+}
+
 export function canvasToJpegBytes(canvas, quality = 0.95) {
   return new Promise((resolve, reject) => {
     canvas.toBlob(async (b) => {

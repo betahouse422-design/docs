@@ -26,6 +26,7 @@ main.js ──► store.js ──► model.js ◄── curves.js, geometry.js  
 | `workflow.js` | Estados de las fotos, copiar/pegar ajustes, recorte al marco, avisos de resolución. Sin DOM. |
 | `auto.js` | Balance de blancos (inversa del shader), tono automático, origen automático para quitar manchas. Sin DOM. |
 | `pdf.js`, `zip.js` | Generadores propios de PDF (una imagen JPEG por página) y ZIP. Sin dependencias. |
+| `brush.js` | Trazos del pincel de máscaras: limpieza y rasterizado a una imagen de transparencia (lo usan el motor y la capa interactiva). |
 | `compose.js` | Dibuja una hoja: marco, foto, logo, texto (Canvas 2D). |
 | `photos.js`, `print-ui.js` | Biblioteca de fotos con tira de miniaturas; panel y vista previa de impresión. |
 | `storage.js` | IndexedDB: ediciones y presets, y (v2) fotos, restaurantes, logos/marcos. |
@@ -102,3 +103,9 @@ El logo se guarda como fracción de la celda (centro y ancho), así se ve igual 
 ## Constantes que deben coincidir
 
 El balance de blancos de `auto.js` es la inversa exacta del modelo del shader. Si cambias las constantes de temperatura o tinte en `shaders.js`, cambia también `WB_TEMP`, `WB_TINT_G` y `WB_TINT_RB` en `auto.js` (hay una prueba que lo verifica).
+
+## Pincel y brillo
+
+- **Pincel:** una máscara de tipo `brush` guarda trazos (puntos 0..1 y radio como fracción del ancho). El motor los rasteriza con Canvas 2D a una textura RGBA8 de ~1024 px; el canal *i* es la máscara activa *i*. Solo se vuelve a rasterizar cuando cambian los trazos o la proporción de la salida. Las coordenadas son las del recorte final, igual que las otras máscaras: si cambias el recorte, hay que repintar.
+- **Bloom y halation:** un solo paso de shader. Muestrea dos anillos de 12 puntos alrededor del píxel en un nivel grueso del mipmap y solo cuenta las zonas claras (umbral por muestra). Bloom mezcla con "screen"; halation suma un tinte rojo-naranja.
+- **Marca de agua:** `watermarkBlob` (en `compose.js`) pinta el logo sobre la foto exportada con la misma función que usa la hoja de impresión.
