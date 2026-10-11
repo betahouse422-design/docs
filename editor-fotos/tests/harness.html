@@ -6,6 +6,10 @@
 <script type="module">
   import { Engine } from '../src/engine.js';
   import * as model from '../src/model.js';
-  window.__t = { Engine, model, engine: new Engine(document.getElementById('c')) };
+  import * as compose from '../src/compose.js';
+  import * as layout from '../src/layout.js';
+  import * as printspec from '../src/printspec.js';
+  import * as pdf from '../src/pdf.js';
+  window.__t = { Engine, model, compose, layout, printspec, pdf, engine: new Engine(document.getElementById('c')) };
   window.__ready = true;
 </script>

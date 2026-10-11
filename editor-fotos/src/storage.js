@@ -5,10 +5,10 @@
 import { migrate } from './model.js';
 
 const DB_NAME = 'editor-fotos';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise = null;
-const memory = { edits: new Map(), presets: new Map() };
+const memory = { edits: new Map(), presets: new Map(), photos: new Map(), brands: new Map(), assets: new Map(), kv: new Map() };
 
 function openDb() {
   if (dbPromise) return dbPromise;
@@ -20,6 +20,11 @@ function openDb() {
         const db = req.result;
         if (!db.objectStoreNames.contains('edits')) db.createObjectStore('edits');
         if (!db.objectStoreNames.contains('presets')) db.createObjectStore('presets', { keyPath: 'id' });
+        // v2: biblioteca de fotos, restaurantes (marca), recursos (logos y marcos) y ajustes sueltos
+        if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('brands')) db.createObjectStore('brands', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('assets')) db.createObjectStore('assets', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
@@ -104,3 +109,71 @@ export function presetsFromJson(text) {
       edits: migrate(p.edits),
     }));
 }
+
+// ======================= v2: biblioteca, restaurantes, recursos =======================
+
+// Almacén genérico por nombre: put / get / getAll / delete, con respaldo en memoria.
+function store(name) {
+  return {
+    async put(rec) {
+      const db = await openDb();
+      memory[name].set(rec.id, rec);
+      if (!db) return;
+      try { await tx(db, name, 'readwrite', (s) => s.put(rec)); } catch { /* queda en memoria */ }
+    },
+    async get(id) {
+      const db = await openDb();
+      if (!db) return memory[name].get(id) || null;
+      try { return (await tx(db, name, 'readonly', (s) => s.get(id))) || memory[name].get(id) || null; } catch { return memory[name].get(id) || null; }
+    },
+    async getAll() {
+      const db = await openDb();
+      if (!db) return [...memory[name].values()];
+      try { return (await tx(db, name, 'readonly', (s) => s.getAll())) || []; } catch { return [...memory[name].values()]; }
+    },
+    async delete(id) {
+      const db = await openDb();
+      memory[name].delete(id);
+      if (!db) return;
+      try { await tx(db, name, 'readwrite', (s) => s.delete(id)); } catch { /* sin acción */ }
+    },
+  };
+}
+
+const photos = store('photos');
+const brands = store('brands');
+const assets = store('assets');
+
+// Fotos: { id, name, blob, edits, status: 'pending'|'edited'|'approved', thumb: Blob|null, addedAt, order }
+export const putPhoto = (rec) => photos.put(rec);
+export const getPhoto = (id) => photos.get(id);
+export const deletePhoto = (id) => photos.delete(id);
+export async function listPhotos() {
+  return (await photos.getAll()).sort((a, b) => (a.order ?? a.addedAt ?? 0) - (b.order ?? b.addedAt ?? 0));
+}
+
+// Restaurantes: { id, name, spec, logoId }
+export const putBrand = (rec) => brands.put(rec);
+export const deleteBrand = (id) => brands.delete(id);
+export async function listBrands() { return (await brands.getAll()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)); }
+
+// Recursos: { id, kind: 'logo'|'frame', name, blob, window?: {x,y,w,h} }
+export const putAsset = (rec) => assets.put(rec);
+export const getAsset = (id) => assets.get(id);
+export const deleteAsset = (id) => assets.delete(id);
+export async function listAssets(kind) { return (await assets.getAll()).filter((a) => !kind || a.kind === kind).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)); }
+
+// Ajustes sueltos (última foto abierta, restaurante activo...)
+export async function kvSet(key, value) {
+  const db = await openDb();
+  memory.kv.set(key, value);
+  if (!db) return;
+  try { await tx(db, 'kv', 'readwrite', (s) => s.put(value, key)); } catch { /* en memoria */ }
+}
+export async function kvGet(key) {
+  const db = await openDb();
+  if (!db) return memory.kv.get(key);
+  try { const v = await tx(db, 'kv', 'readonly', (s) => s.get(key)); return v === undefined ? memory.kv.get(key) : v; } catch { return memory.kv.get(key); }
+}
+
+export const newId = (prefix = 'id') => `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;

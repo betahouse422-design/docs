@@ -15,10 +15,10 @@
   <link rel="stylesheet" href="styles.css">
   <title>Editor de fotos</title>
 </head>
-<body>
+<body data-mode="edit">
   <div id="app">
     <header class="bar">
-      <button id="btnOpen" class="btn primary"><span class="lg">Abrir foto</span><span class="sm">Abrir</span></button>
+      <button id="btnOpen" class="btn primary"><span class="lg">Abrir fotos</span><span class="sm">Abrir</span></button>
       <div class="group">
         <button id="btnUndo" class="btn icon" title="Deshacer (Ctrl+Z)" aria-label="Deshacer" disabled>↶</button>
         <button id="btnRedo" class="btn icon" title="Rehacer (Ctrl+Mayús+Z)" aria-label="Rehacer" disabled>↷</button>
@@ -31,23 +31,34 @@
 
     <main>
       <section id="stage" aria-label="Vista de la foto">
-        <div id="empty">
-          <h1>Editor de fotos</h1>
-          <p>Abre una foto o arrástrala aquí.<br>Todo se procesa en tu dispositivo; nada se sube a ningún servidor.</p>
-          <div class="row">
-            <button id="btnOpen2" class="btn primary big">Abrir foto</button>
-            <button id="btnSample" class="btn big">Probar con una imagen de ejemplo</button>
+        <div id="viewport">
+          <div id="empty">
+            <h1>Editor de fotos</h1>
+            <p>Abre una o varias fotos, o arrástralas aquí.<br>Todo se procesa en tu dispositivo; nada se sube a ningún servidor.</p>
+            <div class="row">
+              <button id="btnOpen2" class="btn primary big">Abrir fotos</button>
+              <button id="btnSample" class="btn big">Probar con una imagen de ejemplo</button>
+            </div>
+            <p class="hint">Formatos: JPEG, PNG, WebP (y HEIC en Safari).</p>
           </div>
-          <p class="hint">Formatos: JPEG, PNG, WebP (y HEIC en Safari).</p>
+          <div id="canvasWrap">
+            <canvas id="view"></canvas>
+            <canvas id="overlay"></canvas>
+            <div id="compareTag" hidden>Original</div>
+          </div>
+          <div id="printWrap">
+            <canvas id="printCanvas"></canvas>
+            <div id="printInfo" class="hint"></div>
+          </div>
         </div>
-        <div id="canvasWrap" hidden>
-          <canvas id="view"></canvas>
-          <canvas id="overlay"></canvas>
-          <div id="compareTag" hidden>Original</div>
-        </div>
+        <div id="filmstrip" hidden></div>
       </section>
 
       <aside id="panel" aria-label="Ajustes">
+        <div id="modeSwitch" role="tablist" aria-label="Modo">
+          <button role="tab" data-mode="edit" class="on">Editar</button>
+          <button role="tab" data-mode="print">Imprimir</button>
+        </div>
         <div class="histWrap">
           <canvas id="hist" width="256" height="64"></canvas>
           <div id="clipInfo" class="clipInfo"></div>
@@ -59,18 +70,19 @@
           <button role="tab" data-tab="masks">Máscaras</button>
           <button role="tab" data-tab="presets">Presets</button>
         </nav>
-        <div id="tabBody">
+        <div id="tabBody" class="scrollbody">
           <section data-tab="adjust" id="tabAdjust"></section>
           <section data-tab="curves" id="tabCurves" hidden></section>
           <section data-tab="geometry" id="tabGeometry" hidden></section>
           <section data-tab="masks" id="tabMasks" hidden></section>
           <section data-tab="presets" id="tabPresets" hidden></section>
         </div>
+        <div id="printBody" class="scrollbody"></div>
       </aside>
     </main>
   </div>
 
-  <input id="file" type="file" accept="image/*" hidden>
+  <input id="file" type="file" accept="image/*" multiple hidden>
   <input id="filePresets" type="file" multiple hidden>
 
   <dialog id="exportDlg">
@@ -94,6 +106,7 @@
     </form>
   </dialog>
 
+  <div id="printSheet" aria-hidden="true"></div>
   <div id="toast" role="status" aria-live="polite" hidden></div>
   <script type="module" src="src/main.js"></script>
 </body>

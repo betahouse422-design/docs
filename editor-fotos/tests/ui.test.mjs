@@ -35,6 +35,8 @@ const centerColor = (page) => page.evaluate(() => {
   const x = Math.floor(width * 0.72); const y = Math.floor(height * 0.30); const i = (y * width + x) * 4;
   return [data[i], data[i + 1], data[i + 2]];
 });
+// abre la imagen de ejemplo y espera a que la foto esté cargada de verdad
+const openSample = async (page) => { await page.click('#btnSample'); await page.waitForFunction(() => window.__app.engine.hasSource() && window.__app.ui.photoId); await frame(page); };
 const frame = (page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 const setSlider = async (page, label, value, scope = '#tabBody') => {
   const row = page.locator(`${scope} .srow`, { has: page.locator('label', { hasText: new RegExp(`^${label}$`) }) }).first();
@@ -54,9 +56,7 @@ t('arranca vacío y con los botones de edición desactivados', async () => {
 
 t('abre la imagen de ejemplo y muestra la foto y el histograma', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample');
-  await page.waitForFunction(() => window.__app.engine.hasSource());
-  await frame(page);
+  await openSample(page);
   assert.equal(await page.locator('#canvasWrap').isVisible(), true);
   assert.equal(await page.locator('#btnExport').isDisabled(), false);
   const w = await page.evaluate(() => document.getElementById('view').clientWidth);
@@ -72,7 +72,7 @@ t('abre la imagen de ejemplo y muestra la foto y el histograma', async () => {
 
 t('mover un deslizador cambia la imagen; deshacer y rehacer la restauran', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   const before = await centerColor(page);
   await setSlider(page, 'Exposición', -1.5);
   const dark = await centerColor(page);
@@ -89,7 +89,7 @@ t('mover un deslizador cambia la imagen; deshacer y rehacer la restauran', async
 
 t('doble clic en la etiqueta restablece el deslizador', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await setSlider(page, 'Contraste', 60);
   assert.equal(await page.evaluate(() => window.__app.store.get().light.contrast), 60);
   await page.locator('#tabBody label', { hasText: /^Contraste$/ }).first().dblclick();
@@ -99,7 +99,7 @@ t('doble clic en la etiqueta restablece el deslizador', async () => {
 
 t('Antes/Después muestra el original mientras se mantiene pulsado', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   const orig = await centerColor(page);
   await setSlider(page, 'Exposición', -2);
   const edited = await centerColor(page);
@@ -118,7 +118,7 @@ t('Antes/Después muestra el original mientras se mantiene pulsado', async () =>
 
 t('color por rangos: elegir un rango y mover sus deslizadores', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.locator('#tabAdjust summary', { hasText: 'Color por rangos' }).click();
   await page.locator('.chip[data-range="blue"]').click();
   await setSlider(page, 'Saturación', -100, '#tabAdjust details:nth-of-type(3)');
@@ -130,7 +130,7 @@ t('color por rangos: elegir un rango y mover sus deslizadores', async () => {
 
 t('curvas: arrastrar crea un punto, se refleja en las ediciones y oscurece', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   const before = await centerColor(page);
   await page.click('#tabs button[data-tab="curves"]');
   const box = await page.locator('#curveCanvas').boundingBox();
@@ -151,7 +151,7 @@ t('curvas: arrastrar crea un punto, se refleja en las ediciones y oscurece', asy
 
 t('recorte: proporción 1:1 y aplicar cambia el tamaño de la salida', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   const [w0, h0] = await page.evaluate(() => window.__app.engine.lastSize);
   await page.click('#tabs button[data-tab="geometry"]');
   await page.locator('#aspectChips .chip[data-a="1:1"]').click(); await frame(page);
@@ -169,7 +169,7 @@ t('recorte: proporción 1:1 y aplicar cambia el tamaño de la salida', async () 
 
 t('recorte: arrastrar una esquina del marco con el ratón', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="geometry"]');
   await page.locator('#cropButtons button', { hasText: 'Recortar' }).click(); await frame(page);
   const box = await page.locator('#overlay').boundingBox();
@@ -184,7 +184,7 @@ t('recorte: arrastrar una esquina del marco con el ratón', async () => {
 
 t('girar 90° intercambia las dimensiones y es deshacible', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="geometry"]');
   const s0 = await page.evaluate(() => window.__app.engine.lastSize);
   await page.locator('button', { hasText: '⟳ 90°' }).click(); await frame(page);
@@ -198,7 +198,7 @@ t('girar 90° intercambia las dimensiones y es deshacible', async () => {
 
 t('máscaras: añadir un degradado, ajustar y arrastrar su punto', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="masks"]');
   await page.locator('button', { hasText: '+ Degradado' }).click(); await frame(page);
   assert.equal(await page.evaluate(() => window.__app.store.get().masks.length), 1);
@@ -220,7 +220,7 @@ t('máscaras: añadir un degradado, ajustar y arrastrar su punto', async () => {
 
 t('máscara radial: mover el centro cambia dónde se aplica', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="masks"]');
   await page.locator('button', { hasText: '+ Radial' }).click(); await frame(page);
   const box = await page.locator('#overlay').boundingBox();
@@ -233,7 +233,7 @@ t('máscara radial: mover el centro cambia dónde se aplica', async () => {
 
 t('presets: previsualizar con intensidad, cancelar y aplicar', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="presets"]');
   await page.locator('.pitem', { hasText: 'Cálido' }).click(); await frame(page);
   assert.equal(await page.evaluate(() => window.__app.store.get().color.temperature), 28);
@@ -252,7 +252,7 @@ t('presets: previsualizar con intensidad, cancelar y aplicar', async () => {
 
 t('presets propios: guardar, persistir tras recargar y borrar', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await setSlider(page, 'Contraste', 40);
   await page.click('#tabs button[data-tab="presets"]');
   await page.fill('#tabPresets input[type=text]', 'Mi look');
@@ -288,7 +288,7 @@ t('las ediciones de una foto se guardan y se recuperan al reabrirla', async () =
 
 t('paquete Lightroom abierto: carga, busca, filtra por grupo y aplica con intensidad', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="presets"]');
   await page.selectOption('#presetSource', 'peva3');
   await page.waitForSelector('.pitem');
@@ -323,7 +323,7 @@ t('paquete Lightroom abierto: carga, busca, filtra por grupo y aplica con intens
 
 t('importar archivos .xmp, .lrtemplate y .pp3 desde el selector', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="presets"]');
   const xmp = '<x:xmpmeta xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" crs:Name="Look XMP" crs:Contrast2012="+25" crs:Saturation="-10" crs:Dehaze="+20"></rdf:Description></rdf:RDF></x:xmpmeta>';
   const lrt = 's = {\n id = "X",\n title = "Look LRT",\n type = "Develop",\n value = {\n settings = {\n Clarity2012 = 40,\n Vibrance = 15,\n },\n },\n}';
@@ -347,7 +347,7 @@ t('importar archivos .xmp, .lrtemplate y .pp3 desde el selector', async () => {
 
 t('importar un archivo que no es un preset muestra un error y no rompe nada', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="presets"]');
   await page.locator('#filePresets').setInputFiles([{ name: 'basura.xmp', mimeType: 'text/plain', buffer: Buffer.from('hola') }, { name: 'foto.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('x') }]);
   await page.waitForFunction(() => document.getElementById('toast').textContent.includes('Problemas'));
@@ -358,7 +358,7 @@ t('importar un archivo que no es un preset muestra un error y no rompe nada', as
 
 t('exportar descarga un JPEG real a resolución completa', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await setSlider(page, 'Saturación', 30);
   await page.click('#btnExport');
   assert.equal(await page.locator('#exportDlg').evaluate((d) => d.open), true);
@@ -374,7 +374,7 @@ t('exportar descarga un JPEG real a resolución completa', async () => {
 
 t('atajos de teclado: Ctrl+Z deshace', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await setSlider(page, 'Brillo', 50);
   await page.keyboard.press('Control+z');
   assert.equal(await page.evaluate(() => window.__app.store.get().light.brightness), 0);
@@ -385,7 +385,7 @@ t('atajos de teclado: Ctrl+Z deshace', async () => {
 
 t('Restablecer deja todo en neutro y se puede deshacer', async () => {
   const { page, ctx } = await newPage({ width: 1280, height: 800 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await setSlider(page, 'Contraste', 70); await setSlider(page, 'Saturación', 40);
   page.once('dialog', (d) => d.accept());
   await page.click('#btnReset'); await frame(page);
@@ -397,7 +397,7 @@ t('Restablecer deja todo en neutro y se puede deshacer', async () => {
 
 t('teléfono (vertical, táctil): la foto y el panel caben sin desbordar', async () => {
   const { page, ctx } = await newPage({ width: 390, height: 844 }, { touch: true });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   const m = await page.evaluate(() => ({
     sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
     view: document.getElementById('view').getBoundingClientRect().toJSON(),
@@ -420,7 +420,7 @@ t('teléfono (vertical, táctil): la foto y el panel caben sin desbordar', async
 
 t('teléfono: tocar y arrastrar el punto de una curva (táctil)', async () => {
   const { page, ctx } = await newPage({ width: 390, height: 844 }, { touch: true });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="curves"]');
   await page.locator('#curveCanvas').scrollIntoViewIfNeeded();
   const pts = await page.evaluate(async () => {
@@ -436,7 +436,7 @@ t('teléfono: tocar y arrastrar el punto de una curva (táctil)', async () => {
 
 t('escritorio ancho: captura final con varios ajustes', async () => {
   const { page, ctx } = await newPage({ width: 1440, height: 900 });
-  await page.click('#btnSample'); await frame(page);
+  await openSample(page);
   await page.click('#tabs button[data-tab="presets"]');
   await page.locator('.pitem', { hasText: 'Dramático' }).click();
   await page.locator('#tabPresets button', { hasText: 'Aplicar' }).click();

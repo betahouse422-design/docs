@@ -1,0 +1,477 @@
+// Prueba de extremo a extremo del flujo del restaurante:
+// abrir varias fotos -> editar -> aprobar -> marco + logo -> PDF / JPEG / imprimir.
+// Uso: node tests/workflow.test.mjs [carpeta-para-capturas]
+import { chromium } from 'playwright-core';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import assert from 'node:assert/strict';
+import { startServer } from './serve.mjs';
+
+const shotsDir = process.argv[2];
+if (shotsDir) mkdirSync(shotsDir, { recursive: true });
+const exe = [process.env.CHROMIUM_PATH, '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'].filter(Boolean).find(existsSync);
+const { server, port } = await startServer(0);
+const browser = await chromium.launch({ executablePath: exe, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox'] });
+const errors = [];
+
+async function newPage(viewport = { width: 1440, height: 900 }, opts = {}) {
+  const ctx = await browser.newContext({ viewport, acceptDownloads: true, hasTouch: !!opts.touch, isMobile: !!opts.touch });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push('pageerror: ' + e));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+  await page.goto(`http://127.0.0.1:${port}/index.html?nosw`);
+  await page.waitForFunction(() => window.__appReady === true);
+  return { page, ctx };
+}
+const frame = (page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+const shot = async (page, name) => { if (shotsDir) await page.screenshot({ path: `${shotsDir}/${name}.png` }); };
+
+// PNG de prueba: fondo de color, con un bloque distinto para ver recortes
+async function png(page, w, h, bg, fg = '#ffffff', alpha = false) {
+  const b64 = await page.evaluate(({ w, h, bg, fg, alpha }) => {
+    const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d');
+    if (!alpha) { const gr = g.createLinearGradient(0, 0, w, h); gr.addColorStop(0, bg); gr.addColorStop(1, '#202020'); g.fillStyle = gr; g.fillRect(0, 0, w, h); }
+    g.fillStyle = fg; g.fillRect(w * 0.35, h * 0.35, w * 0.3, h * 0.3);
+    return c.toDataURL('image/png').split(',')[1];
+  }, { w, h, bg, fg, alpha });
+  return Buffer.from(b64, 'base64');
+}
+const file = (name, buffer, type = 'image/png') => ({ name, mimeType: type, buffer });
+
+async function openPhotos(page, specs) {
+  const files = [];
+  for (const [i, s] of specs.entries()) files.push(file(s.name || `foto-${i + 1}.png`, await png(page, s.w || 1200, s.h || 800, s.bg || '#c05030')));
+  await page.locator('#file').setInputFiles(files);
+  await page.waitForFunction((n) => window.__app.lib.items.length >= n && window.__app.ui.photoId && window.__app.engine.hasSource(), specs.length);
+  await frame(page);
+}
+const items = (page) => page.evaluate(() => window.__app.lib.items.map((p) => ({ id: p.id, name: p.name, status: p.status })));
+const setSlider = async (page, label, value, scope = '#tabBody') => {
+  const row = page.locator(`${scope} .srow`, { has: page.locator('label', { hasText: new RegExp(`^${label}$`) }) }).first();
+  await row.locator('input[type=range]').evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, String(value));
+  await frame(page);
+};
+const settle = (page) => page.waitForTimeout(1000); // deja terminar el guardado diferido
+const waitStatus = (page, i, status) => page.waitForFunction(([i, s]) => window.__app.lib.items[i] && window.__app.lib.items[i].status === s, [i, status], { timeout: 15000 });
+
+let passed = 0; const tests = []; const t = (name, fn) => tests.push([name, fn]);
+
+t('abrir varias fotos: aparece la tira con todas, la primera seleccionada y en estado pendiente', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#c05030' }, { bg: '#30a050' }, { bg: '#3050c0', w: 800, h: 1200 }]);
+  assert.equal(await page.locator('#filmstrip').isVisible(), true);
+  assert.equal(await page.locator('.thumb').count(), 3);
+  assert.equal(await page.locator('.thumb.on').count(), 1);
+  const st = await items(page);
+  assert.deepEqual(st.map((p) => p.status), ['pending', 'pending', 'pending']);
+  assert.match(await page.locator('.fsinfo').innerText(), /3 fotos · 0 aprobadas/);
+  assert.equal(await page.locator('.thumb img').count(), 3, 'cada miniatura tiene imagen');
+  await shot(page, '10-varias-fotos');
+  await ctx.close();
+});
+
+t('editar cambia el estado a "editada"; volver a neutro la deja "pendiente"', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}, { bg: '#30a050' }]);
+  await setSlider(page, 'Exposición', 0.8); await waitStatus(page, 0, 'edited');
+  assert.ok(await page.locator('.thumb.on .badge.edited').count() === 1);
+  await setSlider(page, 'Exposición', 0); await waitStatus(page, 0, 'pending');
+  await ctx.close();
+});
+
+t('aprobar marca la foto y pasa a la siguiente por revisar; editar una aprobada la devuelve a "editada"', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'a.png' }, { name: 'b.png', bg: '#30a050' }, { name: 'c.png', bg: '#3050c0' }]);
+  await setSlider(page, 'Contraste', 20); await settle(page);
+  await page.click('[data-act="approve"]');
+  await page.waitForFunction(() => window.__app.ui.fileName === 'b');
+  const st = await items(page);
+  assert.equal(st[0].status, 'approved');
+  assert.match(await page.locator('.fsinfo').innerText(), /1 aprobada/);
+  assert.equal(await page.locator('.thumb .badge.approved').count(), 1);
+  // volver a la primera y editarla: ya no está aprobada
+  await page.locator('.thumb').first().click(); await page.waitForFunction(() => window.__app.ui.fileName === 'a');
+  await setSlider(page, 'Brillo', 15); await waitStatus(page, 0, 'edited');
+  // atajo de teclado: A aprueba
+  await page.keyboard.press('a'); await page.waitForFunction(() => window.__app.lib.items[0].status === 'approved');
+  await ctx.close();
+});
+
+t('flechas del teclado cambian de foto', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'uno.png' }, { name: 'dos.png', bg: '#30a050' }]);
+  await page.keyboard.press('ArrowRight'); await page.waitForFunction(() => window.__app.ui.fileName === 'dos');
+  await page.keyboard.press('ArrowLeft'); await page.waitForFunction(() => window.__app.ui.fileName === 'uno');
+  await ctx.close();
+});
+
+t('los ajustes de cada foto se conservan al cambiar de una a otra', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'uno.png' }, { name: 'dos.png', bg: '#30a050' }]);
+  await setSlider(page, 'Saturación', 40); await settle(page);
+  await page.locator('.thumb').nth(1).click(); await page.waitForFunction(() => window.__app.ui.fileName === 'dos');
+  assert.equal(await page.evaluate(() => window.__app.store.get().color.saturation), 0);
+  await setSlider(page, 'Saturación', -30); await settle(page);
+  await page.locator('.thumb').first().click(); await page.waitForFunction(() => window.__app.ui.fileName === 'uno');
+  assert.equal(await page.evaluate(() => window.__app.store.get().color.saturation), 40);
+  await ctx.close();
+});
+
+t('copiar ajustes y pegarlos en las fotos marcadas (sin pisar su recorte)', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'uno.png' }, { name: 'dos.png', bg: '#30a050' }, { name: 'tres.png', bg: '#3050c0' }]);
+  await setSlider(page, 'Exposición', 0.5); await setSlider(page, 'Temperatura', 25); await settle(page);
+  assert.equal(await page.locator('[data-act="paste"]').isDisabled(), true);
+  await page.click('[data-act="copy"]');
+  assert.equal(await page.locator('[data-act="paste"]').isDisabled(), false);
+  await page.locator('.thumb .sel').nth(1).click(); await page.locator('.thumb .sel').nth(2).click();
+  await page.click('[data-act="paste"]');
+  await page.waitForFunction(() => window.__app.lib.items.filter((p) => p.status === 'edited').length === 3);
+  const edits = await page.evaluate(async () => { const out = []; for (const p of window.__app.lib.items) { const r = await (await import('/src/storage.js')).getPhoto(p.id); out.push([r.edits.light.exposure, r.edits.color.temperature]); } return out; });
+  assert.deepEqual(edits, [[0.5, 25], [0.5, 25], [0.5, 25]]);
+  await ctx.close();
+});
+
+t('pegar sin fotos marcadas avisa en vez de hacer algo raro', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}, { bg: '#30a050' }]);
+  await setSlider(page, 'Exposición', 0.5); await settle(page);
+  await page.click('[data-act="copy"]'); await page.click('[data-act="paste"]');
+  assert.match(await page.locator('#toast').innerText(), /Marca primero/);
+  assert.equal((await items(page))[1].status, 'pending');
+  await ctx.close();
+});
+
+t('aplicar un preset a todas las fotos', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}, { bg: '#30a050' }, { bg: '#3050c0' }]);
+  await page.click('#tabs button[data-tab="presets"]');
+  await page.locator('.pitem', { hasText: 'Cálido' }).click();
+  await page.click('#btnPresetAll');
+  await page.waitForFunction(() => window.__app.lib.items.every((p) => p.status === 'edited'), null, { timeout: 20000 });
+  const temps = await page.evaluate(async () => { const s = await import('/src/storage.js'); const o = []; for (const p of window.__app.lib.items) o.push((await s.getPhoto(p.id)).edits.color.temperature); return o; });
+  assert.deepEqual(temps, [28, 28, 28]);
+  await ctx.close();
+});
+
+t('quitar una foto de la biblioteca', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'uno.png' }, { name: 'dos.png', bg: '#30a050' }]);
+  page.once('dialog', (d) => d.accept());
+  await page.click('[data-act="remove"]');
+  await page.waitForFunction(() => window.__app.lib.items.length === 1);
+  await page.waitForFunction(() => window.__app.ui.fileName === 'dos');
+  page.once('dialog', (d) => d.accept());
+  await page.click('[data-act="remove"]');
+  await page.waitForFunction(() => window.__app.lib.items.length === 0);
+  assert.equal(await page.locator('#empty').isVisible(), true);
+  await ctx.close();
+});
+
+t('la biblioteca, los estados y la foto actual sobreviven a recargar la página', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'uno.png' }, { name: 'dos.png', bg: '#30a050' }]);
+  await setSlider(page, 'Exposición', 0.7); await settle(page);
+  await page.click('[data-act="approve"]');
+  await page.waitForFunction(() => window.__app.ui.fileName === 'dos'); await settle(page);
+  await page.reload(); await page.waitForFunction(() => window.__appReady === true);
+  await page.waitForFunction(() => window.__app.lib.items.length === 2 && window.__app.engine.hasSource());
+  assert.deepEqual((await items(page)).map((p) => p.status), ['approved', 'pending']);
+  assert.equal(await page.evaluate(() => window.__app.ui.fileName), 'dos');
+  await page.locator('.thumb').first().click(); await page.waitForFunction(() => window.__app.ui.fileName === 'uno');
+  assert.equal(await page.evaluate(() => window.__app.store.get().light.exposure), 0.7);
+  await ctx.close();
+});
+
+t('modo Imprimir: muestra la hoja con la foto, el panel cambia y los botones de edición se ocultan', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForFunction(() => { const c = document.getElementById('printCanvas'); return c.width > 100 && document.getElementById('printInfo').textContent.includes('mm'); });
+  assert.equal(await page.locator('#printWrap').isVisible(), true);
+  assert.equal(await page.locator('#canvasWrap').isVisible(), false);
+  assert.equal(await page.locator('#printBody').isVisible(), true);
+  assert.equal(await page.locator('#tabs').isVisible(), false);
+  assert.equal(await page.locator('#btnUndo').isVisible(), false);
+  assert.equal(await page.locator('#btnExport').innerText(), 'Descargar PDF');
+  assert.match(await page.locator('#printInfo').innerText(), /10 × 15 cm|102 × 152|152 × 102/);
+  await shot(page, '11-imprimir');
+  await page.click('#modeSwitch button[data-mode="edit"]');
+  assert.equal(await page.locator('#canvasWrap').isVisible(), true);
+  assert.equal(await page.locator('#btnExport').innerText(), 'Exportar');
+  await ctx.close();
+});
+
+t('papel y orientación: A4 vertical y automática según la foto', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ w: 1200, h: 800 }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('details[data-sec="hoja"]');
+  await page.selectOption('details[data-sec="hoja"] select >> nth=1', 'portrait'); // orientación
+  await page.selectOption('details[data-sec="hoja"] select >> nth=0', 'a4');
+  await page.waitForFunction(() => document.getElementById('printInfo').textContent.includes('210 × 297'));
+  await page.selectOption('details[data-sec="hoja"] select >> nth=1', 'auto');
+  await page.waitForFunction(() => document.getElementById('printInfo').textContent.includes('297 × 210'));
+  await ctx.close();
+});
+
+t('restaurantes: crear, renombrar, cambiar y eliminar; la configuración es de cada uno', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{}]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('#brandSelect');
+  await page.fill('#brandName', 'La Casona'); await page.locator('#brandName').press('Tab');
+  await page.waitForFunction(() => document.querySelector('#brandSelect option').textContent === 'La Casona');
+  await page.selectOption('details[data-sec="hoja"] select >> nth=0', 'a4'); // papel del primero
+  await page.click('#btnNewBrand');
+  await page.waitForFunction(() => document.querySelectorAll('#brandSelect option').length === 2);
+  assert.equal(await page.evaluate(() => window.__app.printUI.getSpec().paper), '10x15', 'el restaurante nuevo empieza con la configuración por defecto');
+  await page.selectOption('#brandSelect', { index: 0 });
+  await page.waitForFunction(() => window.__app.printUI.getSpec().paper === 'a4');
+  await page.selectOption('#brandSelect', { index: 1 });
+  await page.waitForFunction(() => window.__app.printUI.state.brand.name !== 'La Casona');
+  page.once('dialog', (d) => d.accept());
+  await page.locator('details[data-sec="restaurante"] button', { hasText: 'Eliminar' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('#brandSelect option').length === 1);
+  await ctx.close();
+});
+
+t('logo: se carga, se ve en la hoja, se mueve arrastrando y queda guardado para el restaurante', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#c05030' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('#fileLogo', { state: 'attached' });
+  const logo = await png(page, 400, 160, '#0044ff', '#ffff00');
+  await page.locator('#fileLogo').setInputFiles(file('logo.png', logo));
+  await page.waitForFunction(() => window.__app.printUI.state.assets.logo);
+  await page.waitForTimeout(400);
+  const pos0 = await page.evaluate(() => ({ ...window.__app.printUI.getSpec().logo }));
+  assert.ok(pos0.enabled && pos0.y > 0.8);
+  // el logo aparece en la hoja: hay píxeles azules del logo cerca de la posición inferior
+  const hasBlue = () => page.evaluate(() => { const c = document.getElementById('printCanvas'); const d = c.getContext('2d').getImageData(0, Math.floor(c.height * 0.8), c.width, Math.floor(c.height * 0.2)).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 2] > 200 && d[i] < 80 && d[i + 1] < 120) n++; return n; });
+  assert.ok(await hasBlue() > 50, 'el logo debe verse abajo');
+  await shot(page, '12-logo');
+  // arrastrar el logo hacia arriba a la izquierda
+  const box = await page.locator('#printCanvas').boundingBox();
+  await page.mouse.move(box.x + box.width * pos0.x, box.y + box.height * pos0.y); await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.12, { steps: 6 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  const pos1 = await page.evaluate(() => ({ ...window.__app.printUI.getSpec().logo }));
+  assert.ok(pos1.x < 0.35 && pos1.y < 0.3, `no se movió: ${pos1.x},${pos1.y}`);
+  // botones de posición
+  await page.locator('[data-pos="bottom-right"]').click();
+  assert.ok(await page.evaluate(() => window.__app.printUI.getSpec().logo.x) > 0.7);
+  // sobrevive a recargar
+  await page.waitForTimeout(700);
+  await page.reload(); await page.waitForFunction(() => window.__appReady === true);
+  await page.waitForFunction(() => window.__app.printUI.state.assets.logo, null, { timeout: 15000 });
+  assert.ok(await page.evaluate(() => window.__app.printUI.getSpec().logo.x) > 0.7);
+  await ctx.close();
+});
+
+t('marcos generados: cambiar de tipo y de color se refleja en la hoja', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#c05030' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('#frameKind');
+  await page.selectOption('#frameKind', 'polaroid');
+  await page.waitForFunction(() => window.__app.printUI.getSpec().frame.kind === 'polaroid');
+  await page.waitForTimeout(300);
+  const edge = () => page.evaluate(() => { const c = document.getElementById('printCanvas'); const d = c.getContext('2d').getImageData(2, 2, 1, 1).data; return [d[0], d[1], d[2]]; });
+  assert.deepEqual(await edge(), [255, 255, 255]);
+  await page.locator('details[data-sec="marco"] input[type=color]').first().evaluate((el) => { el.value = '#112233'; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.waitForTimeout(400);
+  assert.deepEqual(await edge(), [17, 34, 51]);
+  await shot(page, '13-polaroid');
+  await ctx.close();
+});
+
+t('marco cargado (PNG): se detecta la ventana, manda la orientación y la foto se ve dentro', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ bg: '#30a050', w: 900, h: 1200 }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('#fileFrame', { state: 'attached' });
+  const frameB64 = await page.evaluate(() => {
+    const c = document.createElement('canvas'); c.width = 1200; c.height = 800; const g = c.getContext('2d');
+    g.fillStyle = '#7a4b20'; g.fillRect(0, 0, 1200, 800); g.fillStyle = '#d9b36c'; g.fillRect(30, 30, 1140, 740); g.clearRect(100, 90, 1000, 620);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  await page.locator('#fileFrame').setInputFiles(file('marco-madera.png', Buffer.from(frameB64, 'base64')));
+  await page.waitForFunction(() => window.__app.printUI.state.assets.frame && window.__app.printUI.state.assets.frame.window);
+  await page.waitForTimeout(400);
+  const w = await page.evaluate(() => window.__app.printUI.state.assets.frame.window);
+  assert.ok(Math.abs(w.x - 100 / 1200) < 0.01 && Math.abs(w.w - 1000 / 1200) < 0.02, JSON.stringify(w));
+  const dims = await page.evaluate(() => [document.getElementById('printCanvas').width, document.getElementById('printCanvas').height]);
+  assert.ok(dims[0] > dims[1], `el marco horizontal manda sobre la foto vertical: ${dims}`);
+  const px = (fx, fy) => page.evaluate(([fx, fy]) => { const c = document.getElementById('printCanvas'); const d = c.getContext('2d').getImageData(Math.floor(c.width * fx), Math.floor(c.height * fy), 1, 1).data; return [d[0], d[1], d[2]]; }, [fx, fy]);
+  const center = await px(0.3, 0.3); const edge = await px(0.01, 0.5);
+  assert.ok(center[1] > center[0] && center[1] > 60, `foto verde dentro: ${center}`);
+  assert.ok(Math.abs(edge[0] - 0x7a) < 25, `marco de madera: ${edge}`);
+  assert.equal(await page.locator('#frameList .pitem').count(), 1);
+  assert.match(await page.locator('details[data-sec="marco"] .hint').first().innerText(), /Ventana detectada|Mis marcos|PNG/);
+  await shot(page, '14-marco-cargado');
+  // el recorte de la foto se puede ajustar a la forma de la ventana desde Editar
+  await page.click('#modeSwitch button[data-mode="edit"]');
+  await page.click('#tabs button[data-tab="geometry"]');
+  await page.locator('button', { hasText: 'Ajustar al marco de impresión' }).click();
+  const crop = await page.evaluate(() => window.__app.store.get().geometry.crop);
+  const aspect = await page.evaluate(() => window.__app.printUI.getWindowAspect());
+  const [ow, oh] = [900, 1200];
+  assert.ok(Math.abs((crop.w * ow) / (crop.h * oh) - aspect) < 0.01, `recorte ${JSON.stringify(crop)} vs ${aspect}`);
+  await ctx.close();
+});
+
+t('texto del pie con variables y varias por hoja', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'Paella' }, { name: 'Tacos', bg: '#30a050' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('details[data-sec="texto"]');
+  await page.locator('details[data-sec="texto"] input[type=checkbox]').first().check();
+  await page.fill('details[data-sec="texto"] input[type=text]', '{nombre} · {foto}');
+  await page.locator('details[data-sec="texto"] input[type=text]').press('Tab');
+  await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => window.__app.printUI.getSpec().caption.text), '{nombre} · {foto}');
+  await page.selectOption('#gridSelect', '2x1'); await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => `${window.__app.printUI.getSpec().cols}x${window.__app.printUI.getSpec().rows}`), '2x1');
+  await ctx.close();
+});
+
+t('pedido: "solo aprobadas", copias y hojas necesarias', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'a.png' }, { name: 'b.png', bg: '#30a050' }, { name: 'c.png', bg: '#3050c0' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForSelector('#jobSummary');
+  assert.match(await page.locator('#jobSummary').innerText(), /No hay fotos en este pedido/);
+  await page.locator('[data-job="all"] input').check();
+  await page.waitForFunction(() => document.getElementById('jobSummary').textContent.includes('3 fotos × 1 copia → 3 hojas'));
+  await page.fill('#copies', '2'); await page.locator('#copies').press('Tab');
+  await page.waitForFunction(() => document.getElementById('jobSummary').textContent.includes('3 fotos × 2 copias → 6 hojas'));
+  await page.selectOption('#gridSelect', '2x2');
+  await page.waitForFunction(() => document.getElementById('jobSummary').textContent.includes('→ 2 hojas'));
+  await ctx.close();
+});
+
+t('avisos: recorte grande (foto vertical en hoja horizontal) y resolución baja', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'vertical.png', w: 600, h: 900 }, { name: 'chica.png', w: 400, h: 267 }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.locator('[data-job="all"] input').check();
+  // con orientación automática la hoja se adapta a cada foto: no debe avisar de recorte
+  await page.waitForFunction(() => /2 fotos/.test(document.getElementById('jobSummary').textContent));
+  assert.ok(!/se recortará/.test(await page.locator('#jobSummary').innerText()), 'con orientación automática no hay recorte grande');
+  // forzando hoja horizontal, la vertical sí pierde mucho
+  await page.selectOption('details[data-sec="hoja"] select >> nth=1', 'landscape');
+  await page.waitForFunction(() => /se recortará más de un 8 %/.test(document.getElementById('jobSummary').textContent), null, { timeout: 15000 });
+  await page.waitForFunction(() => /Resolución baja/.test(document.getElementById('jobSummary').textContent), null, { timeout: 15000 });
+  await ctx.close();
+});
+
+t('"Recortar todas al marco" ajusta el recorte de cada foto a la forma de la ventana', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'v.png', w: 600, h: 900 }, { name: 'h.png', w: 1200, h: 800 }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.locator('[data-job="all"] input').check();
+  await page.click('#btnCropAll');
+  await page.waitForFunction(() => /Recorte ajustado|Ya estaban/.test(document.getElementById('toast').textContent), null, { timeout: 20000 });
+  const r = await page.evaluate(async () => {
+    const s = await import('/src/storage.js'); const out = [];
+    for (const p of window.__app.lib.items) {
+      const rec = await s.getPhoto(p.id); const c = rec.edits.geometry.crop;
+      const got = (c.w * rec.width) / (c.h * rec.height);
+      out.push({ name: rec.name, got, want: window.__app.printUI.windowAspectFor(rec.width / rec.height) });
+    }
+    return out;
+  });
+  r.forEach((x) => assert.ok(Math.abs(x.got - x.want) < 0.02, `${x.name}: ${x.got} vs ${x.want}`));
+  assert.ok(r[0].want < 1 && r[1].want > 1, 'la vertical usa hoja vertical y la horizontal, hoja horizontal');
+  assert.ok((await items(page)).every((p) => p.status === 'edited'));
+  await ctx.close();
+});
+
+t('exportar PDF: archivo válido, una hoja por foto, al tamaño exacto del papel', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'a.png' }, { name: 'b.png', bg: '#30a050' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.locator('[data-job="all"] input').check();
+  await page.selectOption('details[data-sec="hoja"] select >> nth=0', '13x18');
+  await page.selectOption('details[data-sec="hoja"] select >> nth=1', 'landscape');
+  await page.selectOption('details[data-sec="hoja"] select >> nth=2', '150');
+  await page.waitForTimeout(400);
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#btnPdf')]);
+  assert.match(dl.suggestedFilename(), /\.pdf$/);
+  const path = await dl.path();
+  const buf = readFileSync(path);
+  assert.equal(buf.slice(0, 5).toString(), '%PDF-');
+  try {
+    const info = execFileSync('pdfinfo', [path]).toString();
+    assert.match(info, /Pages:\s+2/); assert.match(info, /Page size:\s+504(\.\d+)? x 360(\.\d+)? pts/); // 178 x 127 mm
+    const dir = mkdtempSync(join(tmpdir(), 'pdf-')); execFileSync('pdftoppm', ['-r', '30', '-png', path, join(dir, 'p')]);
+    if (shotsDir) writeFileSync(`${shotsDir}/15-hoja-pdf.png`, readFileSync(join(dir, 'p-1.png')));
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  await ctx.close();
+});
+
+t('exportar JPEG: uno solo si es una hoja; ZIP si son varias', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'a.png' }, { name: 'b.png', bg: '#30a050' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.selectOption('details[data-sec="hoja"] select >> nth=2', '150');
+  await page.locator('[data-job="selected"] input').check();
+  await page.locator('.thumb .sel').first().check();
+  await page.waitForTimeout(300);
+  let [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#btnJpegs')]);
+  assert.match(dl.suggestedFilename(), /\.jpg$/);
+  assert.deepEqual([...readFileSync(await dl.path()).slice(0, 3)], [0xff, 0xd8, 0xff]);
+  await page.locator('[data-job="all"] input').check();
+  [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#btnJpegs')]);
+  assert.match(dl.suggestedFilename(), /\.zip$/);
+  try {
+    const list = execFileSync('unzip', ['-Z1', await dl.path()]).toString().trim().split('\n');
+    assert.equal(list.length, 2); assert.ok(list.every((n) => /-0[12]\.jpg$/.test(n)), list.join(','));
+    execFileSync('unzip', ['-t', await dl.path()]);
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  await ctx.close();
+});
+
+t('imprimir: prepara las hojas con su tamaño de papel y abre el diálogo de impresión', async () => {
+  const { page, ctx } = await newPage();
+  await openPhotos(page, [{ name: 'a.png' }]);
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.locator('[data-job="all"] input').check();
+  await page.selectOption('details[data-sec="hoja"] select >> nth=2', '150');
+  await page.evaluate(() => { window.__printed = null; window.print = () => { const s = document.getElementById('printSheet'); window.__printed = { imgs: s.querySelectorAll('img').length, css: s.querySelector('style').textContent, printing: document.body.classList.contains('printing') }; }; });
+  await page.click('#btnPrint');
+  await page.waitForFunction(() => window.__printed, null, { timeout: 60000 });
+  const r = await page.evaluate(() => window.__printed);
+  assert.equal(r.imgs, 1); assert.equal(r.printing, true);
+  assert.match(r.css, /@page pg0 \{ size: (101\.6|152\.4)mm (152\.4|101\.6)mm; margin: 0; \}/);
+  await ctx.close();
+});
+
+t('teléfono: el modo Imprimir y la tira de fotos caben y se pueden usar con el dedo', async () => {
+  const { page, ctx } = await newPage({ width: 390, height: 844 }, { touch: true });
+  await openPhotos(page, [{}, { bg: '#30a050' }]);
+  const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, fs: document.getElementById('filmstrip').getBoundingClientRect().toJSON(), v: document.getElementById('view').getBoundingClientRect().toJSON() }));
+  assert.ok(m.sw <= m.cw + 1, `desborda: ${m.sw} > ${m.cw}`);
+  assert.ok(m.v.height > 120, `foto muy pequeña: ${m.v.height}`);
+  await shot(page, '16-telefono-editar');
+  await page.click('#modeSwitch button[data-mode="print"]');
+  await page.waitForFunction(() => document.getElementById('printCanvas').width > 100);
+  await page.waitForTimeout(300);
+  const p = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, c: document.getElementById('printCanvas').getBoundingClientRect().toJSON() }));
+  assert.ok(p.sw <= p.cw + 1, `desborda en Imprimir: ${p.sw} > ${p.cw}`);
+  assert.ok(p.c.width > 100 && p.c.width <= 390);
+  await shot(page, '17-telefono-imprimir');
+  await ctx.close();
+});
+
+for (const [name, fn] of tests) {
+  try { await fn(); passed++; console.log(`  ok   ${name}`); }
+  catch (e) { console.log(`  FALLA ${name}\n        ${String(e.message).split('\n').slice(0, 3).join('\n        ')}`); process.exitCode = 1; }
+}
+const real = [...new Set(errors)].filter((e) => !/favicon/.test(e));
+if (real.length) { console.log('\nErrores en la consola del navegador:\n' + real.join('\n')); process.exitCode = 1; }
+console.log(`\n${passed}/${tests.length} pruebas de flujo correctas`);
+await browser.close(); server.close();

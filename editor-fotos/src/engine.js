@@ -87,6 +87,12 @@ export class Engine {
 
   hasSource() { return !!this.srcTex; }
 
+  // Libera la foto cargada (por ejemplo, al quitar la última de la biblioteca).
+  clearSource() {
+    const gl = this.gl;
+    if (this.srcTex) { gl.deleteTexture(this.srcTex); this.srcTex = null; }
+  }
+
   _buildBlur() {
     const gl = this.gl;
     const [sw, sh] = this.srcSize;

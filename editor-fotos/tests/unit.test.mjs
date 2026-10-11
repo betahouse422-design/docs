@@ -533,3 +533,313 @@ test('preset con curvas y gradación al 0 % deja las ediciones exactamente igual
   assert.deepEqual(applyPreset(base, p, 0), base);
   assert.notDeepEqual(applyPreset(base, p, 0.5), base);
 });
+
+// ---------- diseño de impresión ----------
+import {
+  PAPERS, mmToPx, pageMm, pagePx, insetRect, gridCells, coverCrop, containRect, cropLoss, logoRect, LOGO_POSITIONS,
+  builtinFrameGeometry, frameDest, mapWindow, findFrameWindow, windowAspectForBuiltin, ptFromMm,
+} from '../src/layout.js';
+import { buildPdf } from '../src/pdf.js';
+
+test('mmToPx convierte milímetros a píxeles según los ppp', () => {
+  assert.equal(mmToPx(25.4, 300), 300);
+  assert.equal(mmToPx(210, 300), 2480);
+  assert.equal(mmToPx(297, 300), 3508);
+  assert.ok(approx(ptFromMm(25.4), 72));
+});
+
+test('pageMm: orientación fija, automática y papel cuadrado/personalizado', () => {
+  assert.deepEqual(pageMm('a4', 'portrait'), { w: 210, h: 297 });
+  assert.deepEqual(pageMm('a4', 'landscape'), { w: 297, h: 210 });
+  assert.deepEqual(pageMm('a4', 'auto', null, 1.5), { w: 297, h: 210 });
+  assert.deepEqual(pageMm('a4', 'auto', null, 0.75), { w: 210, h: 297 });
+  assert.deepEqual(pageMm('sq20', 'landscape'), { w: 200, h: 200 });
+  assert.deepEqual(pageMm('custom', 'portrait', { w: 120, h: 80 }), { w: 80, h: 120 });
+  assert.deepEqual(pageMm('custom', 'portrait', { w: 5, h: 99999 }), { w: 20, h: 1000 }); // límites sanos
+  assert.ok(PAPERS.every((p) => p.w > 0 && p.h > 0 && p.id && p.label));
+});
+
+test('gridCells reparte la hoja en celdas iguales con separación', () => {
+  const cells = gridCells({ x: 0, y: 0, w: 1000, h: 600 }, 2, 2, 20);
+  assert.equal(cells.length, 4);
+  assert.ok(approx(cells[0].w, 490) && approx(cells[0].h, 290));
+  assert.ok(approx(cells[1].x, 510) && approx(cells[2].y, 310));
+  assert.equal(gridCells({ x: 0, y: 0, w: 100, h: 100 }, 0, 0).length, 1);
+});
+
+test('coverCrop y containRect conservan la proporción', () => {
+  const c = coverCrop(3000, 2000, 1000, 1000); // foto horizontal en caja cuadrada
+  assert.ok(approx(c.sw / c.sh, 1) && approx(c.sx, 500) && approx(c.sy, 0));
+  const v = coverCrop(2000, 3000, 1000, 500);
+  assert.ok(approx(v.sw / v.sh, 2) && approx(v.sx, 0));
+  const r = containRect(3000, 2000, { x: 10, y: 10, w: 600, h: 600 });
+  assert.ok(approx(r.w / r.h, 1.5) && approx(r.w, 600) && approx(r.y, 10 + (600 - 400) / 2));
+  assert.ok(approx(cropLoss(3000, 2000, 3000, 2000), 0) && cropLoss(3000, 2000, 1000, 1000) > 0.3);
+});
+
+test('logoRect coloca el logo por su centro y no se sale de la página', () => {
+  const page = { w: 1000, h: 1500 };
+  const r = logoRect({ x: 0.5, y: 0.93, widthPct: 20 }, 2, page);
+  assert.ok(approx(r.w, 200) && approx(r.h, 100) && approx(r.x, 400));
+  const out = logoRect({ x: 1, y: 1, widthPct: 30 }, 1, page);
+  assert.ok(out.x + out.w <= 1000 + 1e-9 && out.y + out.h <= 1500 + 1e-9);
+  for (const [px, py] of Object.values(LOGO_POSITIONS)) assert.ok(px >= 0 && px <= 1 && py >= 0 && py <= 1);
+});
+
+test('marcos generados: la ventana queda dentro del área y la polaroid tiene más borde abajo', () => {
+  const rect = { x: 0, y: 0, w: 1200, h: 1800 };
+  for (const kind of ['none', 'border', 'double', 'polaroid', 'rounded', 'mat']) {
+    const g = builtinFrameGeometry({ kind, widthMm: 8, radiusMm: 5 }, rect, 300);
+    assert.ok(g.window.x >= 0 && g.window.y >= 0 && g.window.x + g.window.w <= 1200 + 1e-9 && g.window.y + g.window.h <= 1800 + 1e-9, kind);
+  }
+  assert.deepEqual(builtinFrameGeometry({ kind: 'none' }, rect, 300).window, rect);
+  const pol = builtinFrameGeometry({ kind: 'polaroid', widthMm: 8 }, rect, 300);
+  const top = pol.window.y; const bottom = 1800 - (pol.window.y + pol.window.h);
+  assert.ok(bottom > top * 3 - 1);
+  assert.ok(builtinFrameGeometry({ kind: 'rounded', widthMm: 8, radiusMm: 5 }, rect, 300).radius > 0);
+});
+
+// marco de prueba: borde opaco, esquinas transparentes (tocan el borde) y ventana transparente interior
+function makeFrame(w, h, win, corners = true) {
+  const d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4; d[i] = 120; d[i + 1] = 80; d[i + 2] = 40; d[i + 3] = 255;
+    const inWin = x >= win.x && x < win.x + win.w && y >= win.y && y < win.y + win.h;
+    const corner = corners && ((x < 12 && y < 12) || (x >= w - 12 && y >= h - 12));
+    if (inWin || corner) d[i + 3] = 0;
+  }
+  return d;
+}
+
+test('findFrameWindow encuentra la ventana transparente e ignora las esquinas', () => {
+  const w = 600; const h = 400; const win = { x: 60, y: 50, w: 420, h: 250 };
+  const r = findFrameWindow(makeFrame(w, h, win), w, h);
+  assert.ok(r, 'debe encontrar la ventana');
+  assert.ok(Math.abs(r.x - win.x / w) < 0.01 && Math.abs(r.y - win.y / h) < 0.01, JSON.stringify(r));
+  assert.ok(Math.abs(r.w - win.w / w) < 0.015 && Math.abs(r.h - win.h / h) < 0.015, JSON.stringify(r));
+});
+
+test('findFrameWindow: marco sin ventana o totalmente transparente devuelve null', () => {
+  const opaque = new Uint8ClampedArray(200 * 200 * 4).fill(255);
+  assert.equal(findFrameWindow(opaque, 200, 200), null);
+  assert.equal(findFrameWindow(new Uint8ClampedArray(200 * 200 * 4), 200, 200), null);
+});
+
+test('findFrameWindow funciona con imágenes grandes (usa muestreo)', () => {
+  const w = 2400; const h = 1600; const win = { x: 300, y: 200, w: 1700, h: 1000 };
+  const r = findFrameWindow(makeFrame(w, h, win), w, h);
+  assert.ok(Math.abs(r.x - 0.125) < 0.01 && Math.abs(r.w - 1700 / 2400) < 0.01);
+});
+
+test('frameDest y mapWindow colocan el marco y su ventana en la hoja', () => {
+  const box = { x: 100, y: 100, w: 1000, h: 1000 };
+  const d = frameDest(600, 400, box, 'contain');
+  assert.ok(approx(d.w / d.h, 1.5) && approx(d.w, 1000));
+  assert.deepEqual(frameDest(600, 400, box, 'stretch'), box);
+  const cv = frameDest(600, 400, box, 'cover');
+  assert.ok(cv.w >= 1000 - 1e-9 && cv.h >= 1000 - 1e-9);
+  const m = mapWindow({ x: 0.1, y: 0.2, w: 0.5, h: 0.5 }, d);
+  assert.ok(approx(m.x, d.x + d.w * 0.1) && approx(m.w, d.w * 0.5));
+});
+
+test('windowAspectForBuiltin da la proporción de la ventana de la foto', () => {
+  const a = windowAspectForBuiltin({ paper: '10x15', orientation: 'landscape', marginMm: 0, frame: { kind: 'none' } });
+  assert.ok(approx(a, 152.4 / 101.6, 0.01));
+  const b = windowAspectForBuiltin({ paper: '10x15', orientation: 'landscape', marginMm: 0, frame: { kind: 'polaroid', widthMm: 6 } });
+  assert.ok(b > 0 && b !== a);
+});
+
+// ---------- PDF ----------
+const TINY_JPG = Uint8Array.from(Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAAgADADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD4YtPDXT5K2LXwz0+Su/tPDXT5P0rZtPDPT5K/q3Nc131PkMmzvbU4C18M9PkrYtPDXT5K7+18M9PkrZtPDPT5P0r8bzXNd9T91ybO9tTgLTw10+Stm18M9Pkrv7Tw10+Sti08NdPkr8bzXNd9T91ybO9tTnLTw10+Sti18NdPkr0C18NdPkrYtPDXT5P0r9mzXNd9T/JjJs721OAtfDPT5K2bXwz0+Su/tfDPT5K2LXwz0+SvxrNc131P3XJs721OAtPDXT5K2bTw10+T9K7+18M9PkrZtPDXT5P0r8czXNd9T91ybO9tT//Z', 'base64'));
+
+test('buildPdf genera un PDF con la estructura correcta (xref apunta a cada objeto)', () => {
+  const pdf = buildPdf([{ jpeg: TINY_JPG, imgW: 48, imgH: 32, widthMm: 152.4, heightMm: 101.6 }, { jpeg: TINY_JPG, imgW: 48, imgH: 32, widthMm: 210, heightMm: 297 }], { title: 'Pedido ñandú' });
+  const text = Buffer.from(pdf).toString('latin1');
+  assert.ok(text.startsWith('%PDF-1.4'));
+  assert.ok(text.trimEnd().endsWith('%%EOF'));
+  const startxref = Number(text.match(/startxref\n(\d+)\n/)[1]);
+  assert.equal(text.slice(startxref, startxref + 4), 'xref');
+  const entries = [...text.slice(startxref).matchAll(/(\d{10}) 00000 n /g)].map((m) => Number(m[1]));
+  assert.equal(entries.length, 3 + 2 * 3);
+  entries.forEach((off, i) => assert.ok(text.slice(off).startsWith(`${i + 1} 0 obj`), `objeto ${i + 1} mal apuntado`));
+  assert.match(text, /\/Count 2/);
+  assert.match(text, /\/MediaBox \[0 0 432\.000 288\.000\]/); // 152.4 x 101.6 mm = 6 x 4 in
+});
+
+test('buildPdf rechaza una lista vacía', () => assert.throws(() => buildPdf([]), /páginas/));
+
+// ---------- especificación de impresión / restaurante ----------
+import { defaultPrintSpec, migratePrintSpec, newBrand, migrateBrand, captionText, setLogoPosition, pagesNeeded, expandCopies, FONTS } from '../src/printspec.js';
+import { cellWindow, effectiveOrientation, windowAspect } from '../src/layout.js';
+
+test('printspec: valores por defecto son válidos y migrate es idempotente', () => {
+  const d = defaultPrintSpec();
+  assert.deepEqual(migratePrintSpec(d), d);
+  assert.deepEqual(migratePrintSpec(migratePrintSpec(d)), d);
+});
+
+test('printspec: migrate sanea valores inválidos y fuera de rango', () => {
+  const m = migratePrintSpec({ paper: 'zzz', dpi: 77, marginMm: 999, background: 'rojo', cols: 9, rows: -3, copies: 1000, frame: { kind: 'x', widthMm: -5, color: '#12' }, logo: { widthPct: 1000, x: 5, opacity: 0 }, caption: { sizePt: 1, font: 'comic', text: 'a'.repeat(500) } });
+  assert.equal(m.paper, '10x15'); assert.equal(m.dpi, 300); assert.equal(m.marginMm, 50); assert.equal(m.background, '#ffffff');
+  assert.equal(m.cols, 4); assert.equal(m.rows, 1); assert.equal(m.copies, 99);
+  assert.equal(m.frame.kind, 'border'); assert.equal(m.frame.widthMm, 0); assert.equal(m.frame.color, '#ffffff');
+  assert.equal(m.logo.widthPct, 100); assert.equal(m.logo.x, 1); assert.equal(m.logo.opacity, 0.05);
+  assert.equal(m.caption.sizePt, 6); assert.equal(m.caption.font, 'serif'); assert.equal(m.caption.text.length, 200);
+  assert.deepEqual(migratePrintSpec(null), defaultPrintSpec());
+  assert.deepEqual(migratePrintSpec('x'), defaultPrintSpec());
+});
+
+test('printspec: restaurante nuevo y migración', () => {
+  const b = newBrand('La Casona');
+  assert.equal(b.name, 'La Casona'); assert.ok(b.id); assert.deepEqual(b.spec, defaultPrintSpec());
+  const m = migrateBrand({ name: 'X'.repeat(200), spec: { paper: 'a4' }, logoId: 5 });
+  assert.equal(m.name.length, 60); assert.equal(m.spec.paper, 'a4'); assert.equal(m.logoId, null);
+});
+
+test('printspec: texto del pie con variables', () => {
+  assert.equal(captionText('{nombre} · {fecha}', { nombre: 'La Casona', fecha: '11/10/2026' }), 'La Casona · 11/10/2026');
+  assert.equal(captionText('  {foto}  ', { foto: 'Paella' }), 'Paella');
+  assert.equal(captionText(undefined), '');
+  assert.ok(FONTS.length >= 4);
+});
+
+test('printspec: posición del logo, páginas y copias', () => {
+  const s = setLogoPosition(defaultPrintSpec(), 'top-right');
+  assert.ok(s.logo.x > 0.5 && s.logo.y < 0.5);
+  assert.deepEqual(setLogoPosition(defaultPrintSpec(), 'nada'), defaultPrintSpec());
+  assert.equal(pagesNeeded(5, { ...defaultPrintSpec(), cols: 2, rows: 2, copies: 1 }), 2);
+  assert.equal(pagesNeeded(3, { ...defaultPrintSpec(), copies: 2 }), 6);
+  assert.deepEqual(expandCopies(['a', 'b'], 2), ['a', 'a', 'b', 'b']);
+});
+
+test('cellWindow: marco generado y marco cargado', () => {
+  const cell = { x: 0, y: 0, w: 1500, h: 1000 };
+  const g = cellWindow({ kind: 'border', widthMm: 5 }, cell, 300);
+  assert.ok(g.window.w < 1500 && g.custom === false);
+  const asset = { w: 3000, h: 2000, window: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 } };
+  const c = cellWindow({ kind: 'custom', fit: 'contain' }, cell, 300, asset);
+  assert.ok(c.custom && approx(c.window.w, 1200) && approx(c.window.x, 150));
+  // marco cargado pero sin ventana detectada: cae a sin marco
+  assert.equal(cellWindow({ kind: 'custom' }, cell, 300, { w: 10, h: 10, window: null }).custom, false);
+});
+
+test('effectiveOrientation y windowAspect con marco cargado', () => {
+  const spec = { ...defaultPrintSpec(), orientation: 'portrait', frame: { ...defaultPrintSpec().frame, kind: 'custom', fit: 'contain' } };
+  const wide = { w: 3000, h: 2000, window: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 } };
+  assert.equal(effectiveOrientation(spec, wide), 'landscape');
+  assert.equal(effectiveOrientation({ ...spec, frame: { ...spec.frame, kind: 'border' } }, wide), 'portrait');
+  const a = windowAspect({ ...spec, paper: '10x15' }, wide);
+  assert.ok(a > 1.4 && a < 1.6, String(a)); // ventana 80% de un marco 3:2
+  const free = windowAspect({ ...defaultPrintSpec(), paper: '10x15', orientation: 'landscape', frame: { ...defaultPrintSpec().frame, kind: 'none' } });
+  assert.ok(approx(free, 1.5, 0.01));
+});
+
+// ---------- ZIP ----------
+import { buildZip, crc32 } from '../src/zip.js';
+import { execFileSync } from 'node:child_process';
+import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+test('crc32 coincide con el valor conocido de "123456789"', () => {
+  assert.equal(crc32(new TextEncoder().encode('123456789')), 0xcbf43926);
+  assert.equal(crc32(new Uint8Array(0)), 0);
+});
+
+test('buildZip produce un ZIP que unzip abre y cuyo contenido coincide', () => {
+  const a = new Uint8Array(5000).map((_, i) => (i * 7) & 255);
+  const b = new TextEncoder().encode('hola ñandú');
+  const zip = buildZip([{ name: 'hoja-1.jpg', data: a }, { name: 'ñandú/hoja 2.jpg', data: b }]);
+  const dir = mkdtempSync(join(tmpdir(), 'zip-'));
+  writeFileSync(join(dir, 'x.zip'), zip);
+  try {
+    const list = execFileSync('unzip', ['-Z1', join(dir, 'x.zip')]).toString().trim().split('\n');
+    assert.deepEqual(list.sort(), ['hoja-1.jpg', 'ñandú/hoja 2.jpg'].sort());
+    execFileSync('unzip', ['-t', join(dir, 'x.zip')]); // prueba de integridad (CRC)
+    execFileSync('unzip', ['-o', '-q', join(dir, 'x.zip'), '-d', join(dir, 'out')]);
+    assert.deepEqual(new Uint8Array(readFileSync(join(dir, 'out', 'hoja-1.jpg'))), a);
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  assert.equal(zip[0], 0x50); assert.equal(zip[1], 0x4b);
+});
+
+// ---------- flujo con varias fotos ----------
+import {
+  statusAfterEdit, toggleApproved, pasteEdits, cropForAspect, visibleAspect, selectJobIds, summarize,
+  nextToReview, neighbor, cropWarnings, orientedDims,
+} from '../src/workflow.js';
+
+const ph = (id, status, aspect = 1.5, name = id) => ({ id, status, aspect, name });
+
+test('flujo: estados al editar y al aprobar', () => {
+  assert.equal(statusAfterEdit(defaultEdits()), 'pending');
+  const e = defaultEdits(); e.light.exposure = 1;
+  assert.equal(statusAfterEdit(e), 'edited');
+  assert.equal(toggleApproved('edited'), 'approved');
+  assert.equal(toggleApproved('approved'), 'edited');
+  assert.equal(toggleApproved('pending'), 'approved');
+});
+
+test('flujo: pegar ajustes no pisa recorte ni máscaras por defecto', () => {
+  const src = defaultEdits(); src.light.exposure = 1; src.geometry.rotate90 = 1; src.masks.push(newMask('radial'));
+  const tgt = defaultEdits(); tgt.geometry.crop = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 };
+  const out = pasteEdits(tgt, src);
+  assert.equal(out.light.exposure, 1); assert.equal(out.geometry.rotate90, 0);
+  assert.deepEqual(out.geometry.crop, { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }); assert.equal(out.masks.length, 0);
+  const full = pasteEdits(tgt, src, { geometry: true, masks: true });
+  assert.equal(full.geometry.rotate90, 1); assert.equal(full.masks.length, 1);
+  assert.equal(src.masks.length, 1, 'no modifica el original');
+});
+
+test('flujo: recorte a una proporción en una foto horizontal y en una girada', () => {
+  const e = cropForAspect(defaultEdits(), 1, 3000, 2000);
+  assert.ok(approx((e.geometry.crop.w * 3000) / (e.geometry.crop.h * 2000), 1, 1e-6));
+  const rot = defaultEdits(); rot.geometry.rotate90 = 1;
+  const r = cropForAspect(rot, 2, 3000, 2000); // girada: 2000 x 3000
+  assert.ok(approx((r.geometry.crop.w * 2000) / (r.geometry.crop.h * 3000), 2, 1e-6));
+  assert.ok(approx(visibleAspect(r, 3000, 2000), 2, 1e-6));
+  assert.deepEqual(orientedDims(300, 200, 1), { w: 200, h: 300 });
+});
+
+test('flujo: selección del pedido y resumen', () => {
+  const list = [ph('a', 'approved'), ph('b', 'edited'), ph('c', 'approved'), ph('d', 'pending')];
+  assert.deepEqual(selectJobIds(list, 'approved'), ['a', 'c']);
+  assert.deepEqual(selectJobIds(list, 'all'), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(selectJobIds(list, 'selected', new Set(['b', 'd', 'zzz'])), ['b', 'd']);
+  assert.deepEqual(summarize(list), { pending: 1, edited: 1, approved: 2, total: 4 });
+});
+
+test('flujo: siguiente por revisar salta las aprobadas y da la vuelta', () => {
+  const list = [ph('a', 'approved'), ph('b', 'edited'), ph('c', 'approved'), ph('d', 'pending')];
+  assert.equal(nextToReview(list, 'b'), 'd');
+  assert.equal(nextToReview(list, 'd'), 'b');
+  assert.equal(nextToReview([ph('a', 'approved'), ph('b', 'approved')], 'a'), null);
+  assert.equal(nextToReview([], 'a'), null);
+  assert.equal(neighbor(list, 'a', 1), 'b'); assert.equal(neighbor(list, 'a', -1), 'a'); assert.equal(neighbor(list, 'd', 5), 'd');
+});
+
+test('flujo: avisos de recorte según la proporción de la ventana', () => {
+  const list = [ph('h', 'edited', 1.5), ph('v', 'edited', 0.75), ph('s', 'edited', 1.0)];
+  const w = cropWarnings(list, 1.5);
+  assert.deepEqual(w.map((x) => x.id), ['v', 's']);
+  assert.ok(w[0].loss > 0.4);
+  assert.deepEqual(cropWarnings(list, 1.5, 0.9), []);
+});
+
+import { effectivePpi } from '../src/workflow.js';
+import { cellWindowSizes } from '../src/compose.js';
+
+test('effectivePpi: foto de 3000×2000 en 15×10 cm da 508 ppp; recortada, menos', () => {
+  const rec = { width: 3000, height: 2000, edits: defaultEdits() };
+  // ventana de 15.24 x 10.16 cm a 300 ppp = 1800 x 1200 px
+  assert.equal(effectivePpi(rec, 1800, 1200, 300), 500);
+  const crop = defaultEdits(); crop.geometry.crop = { x: 0, y: 0, w: 0.5, h: 0.5 };
+  assert.equal(effectivePpi({ ...rec, edits: crop }, 1800, 1200, 300), 250);
+  const rot = defaultEdits(); rot.geometry.rotate90 = 1;
+  assert.ok(effectivePpi({ ...rec, edits: rot }, 1800, 1200, 300) < 500, 'una foto girada en una ventana horizontal pierde resolución al cubrir');
+});
+
+test('cropWarnings acepta una proporción distinta por foto', () => {
+  const list = [ph('h', 'edited', 1.5), ph('v', 'edited', 0.75)];
+  assert.deepEqual(cropWarnings(list, (p) => (p.aspect > 1 ? 1.5 : 0.75)), []);
+  assert.deepEqual(cropWarnings(list, () => 1.5).map((x) => x.id), ['v']);
+});

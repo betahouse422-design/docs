@@ -12,41 +12,24 @@ import { computeHistogram, drawHistogram, clipping } from './histogram.js';
 import { ASPECTS, aspectValue, fitAspect } from './geometry.js';
 import * as storage from './storage.js';
 import { parsePresetText } from './import-presets.js';
-
-const $ = (s, r = document) => r.querySelector(s);
-
-function el(tag, attrs = {}, ...kids) {
-  const n = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === 'class') n.className = v;
-    else if (k.startsWith('on')) n.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (v === true) n.setAttribute(k, '');
-    else if (v !== false && v != null) n.setAttribute(k, v);
-  }
-  for (const kid of kids.flat()) if (kid != null) n.append(kid);
-  return n;
-}
+import { $, el, toast, sliderRow, download } from './ui-kit.js';
+import { Library, createFilmstrip, decodeBlob, makeThumb, sizeOf } from './photos.js';
+import {
+  statusAfterEdit, toggleApproved, pasteEdits, nextToReview, neighbor, visibleAspect, cropForAspect,
+} from './workflow.js';
+import { createPrintUI } from './print-ui.js';
 
 // ---------- estado global ----------
 const view = $('#view');
 const engine = new Engine(view);
 const store = new EditStore();
 const ui = {
-  fileId: null, fileName: 'foto', compare: false, cropMode: false, cropDraft: null, cropAspectId: 'free',
+  fileId: null, photoId: null, mode: 'edit', clip: null, loadToken: 0, fileName: 'foto', compare: false, cropMode: false, cropDraft: null, cropAspectId: 'free',
   tab: 'adjust', hslRange: 'red', selMask: -1, presetSession: null, userPresets: [], selPresetId: null,
   presetSource: 'starter', presetQuery: '', presetGroup: '', presetLimit: 60, packs: {}, packLoading: false,
   renderQueued: false, histTimer: 0, saveTimer: 0,
 };
 const controls = {}; // path -> { setValue(v) }
-
-// ---------- avisos ----------
-let toastTimer = 0;
-function toast(msg, isErr = false) {
-  const t = $('#toast');
-  t.textContent = msg; t.className = isErr ? 'err' : ''; t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, isErr ? 5000 : 2200);
-}
 
 // ---------- render ----------
 function requestRender() {
@@ -57,8 +40,8 @@ function requestRender() {
 
 function renderNow() {
   ui.renderQueued = false;
-  if (!engine.hasSource()) return;
-  const stage = $('#stage');
+  if (!engine.hasSource() || ui.mode !== 'edit') return;
+  const stage = $('#viewport');
   const cs = getComputedStyle(stage);
   const w = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const h = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
@@ -90,33 +73,6 @@ function updateHistogram() {
 }
 
 // ---------- controles reutilizables ----------
-function fmt(spec, v) {
-  if (spec.unit === 'EV') return `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
-  if (spec.unit === '°') return `${v.toFixed(1)}°`;
-  return String(Math.round(v));
-}
-
-// Crea una fila con deslizador. opts: { label, min, max, step, neutral, unit, track,
-//   get(), set(v) (vivo), commit() }
-function sliderRow(opts) {
-  const id = 's' + Math.random().toString(36).slice(2, 8);
-  const input = el('input', { type: 'range', id, min: opts.min, max: opts.max, step: opts.step });
-  if (opts.track) input.classList.add('track-' + opts.track);
-  const out = el('output', { for: id });
-  const label = el('label', { for: id, title: 'Doble clic para restablecer' }, opts.label);
-  const row = el('div', { class: 'srow' }, label, out, input);
-  const neutral = opts.neutral ?? 0;
-  const setValue = (v) => {
-    input.value = v; out.textContent = fmt(opts, Number(v));
-    row.classList.toggle('changed', Math.abs(Number(v) - neutral) > 1e-9);
-  };
-  input.addEventListener('input', () => { const v = Number(input.value); opts.set(v); out.textContent = fmt(opts, v); row.classList.toggle('changed', Math.abs(v - neutral) > 1e-9); });
-  input.addEventListener('change', () => opts.commit());
-  label.addEventListener('dblclick', () => { opts.set(neutral); setValue(neutral); opts.commit(); });
-  setValue(opts.get());
-  return { row, setValue, refresh: () => setValue(opts.get()) };
-}
-
 function pathSlider(spec) {
   const c = sliderRow({
     ...spec,
@@ -255,6 +211,9 @@ function buildGeometryTab() {
       return chips;
     })(),
     el('div', { class: 'row', id: 'cropButtons' }),
+    el('div', { class: 'sub' }, 'Para imprimir'),
+    el('div', { class: 'row' }, btn('Ajustar al marco de impresión', () => cropToPrintFrame())),
+    el('p', { class: 'hint', id: 'frameAspectHint' }, 'Recorta esta foto a la forma de la ventana del marco elegido en "Imprimir".'),
     el('p', { class: 'hint', id: 'cropHint' }, 'Elige una proporción o pulsa "Recortar" para ajustar el marco con el dedo o el ratón.'),
   );
   renderCropButtons();
@@ -280,6 +239,16 @@ function renderCropButtons() {
 function orientedSize() {
   const g = engine.geometryInfo(store.get(), true);
   return [g.ow, g.oh];
+}
+
+function cropToPrintFrame() {
+  if (!engine.hasSource() || !printUI) return;
+  const [ow, oh] = orientedSize();
+  const aspect = printUI.windowAspectFor(visibleAspect(store.get(), ow, oh));
+  const rect = fitAspect(aspect, ow, oh, store.get().geometry.crop);
+  store.update((e) => { e.geometry.crop = rect; });
+  store.commit();
+  toast(`Recorte ajustado a la forma del marco (${aspect.toFixed(2)} : 1)`);
 }
 
 function startCrop() {
@@ -493,7 +462,10 @@ function buildPresetsTab() {
     root.append(el('div', { class: 'card' }, el('div', { class: 'hint' }, s.preset.name), inten.row,
       el('div', { class: 'row' },
         el('button', { class: 'btn small primary', type: 'button', onClick: applyPresetSession }, 'Aplicar'),
-        el('button', { class: 'btn small', type: 'button', onClick: cancelPreset }, 'Cancelar'))));
+        el('button', { class: 'btn small', type: 'button', onClick: cancelPreset }, 'Cancelar')),
+      lib.items.length > 1 ? el('div', { class: 'row', style: 'margin-top:8px' },
+        el('button', { class: 'btn small', type: 'button', id: 'btnPresetAll', onClick: () => applySessionToMany('all') }, 'Aplicar a todas las fotos'),
+        el('button', { class: 'btn small', type: 'button', id: 'btnPresetMarked', onClick: () => applySessionToMany('marked') }, 'A las marcadas')) : null));
   }
 
   const name = el('input', { class: 'field', type: 'text', placeholder: 'Nombre del preset nuevo', maxlength: 60 });
@@ -567,6 +539,20 @@ function applyPresetSession() {
   store.commit(); buildPresetsTab(); toast(`Preset "${s.preset.name}" aplicado`);
 }
 
+async function applySessionToMany(which) {
+  const s = ui.presetSession;
+  if (!s) return;
+  const ids = which === 'all' ? lib.items.map((p) => p.id) : [...lib.selected];
+  if (!ids.length) { toast('No hay fotos marcadas (casilla de cada miniatura)', true); return; }
+  const { preset, intensity } = s;
+  ui.presetSession = null; ui.selPresetId = null;
+  store.replace(s.base, false); // quita la previsualización antes de aplicar de verdad
+  toast(`Aplicando "${preset.name}" a ${ids.length} foto${ids.length === 1 ? '' : 's'}…`);
+  const n = await batchUpdate(ids, (e) => applyPreset(e, preset.edits, intensity));
+  buildPresetsTab();
+  toast(`Preset "${preset.name}" aplicado a ${n} foto${n === 1 ? '' : 's'}`);
+}
+
 function cancelPreset() {
   const s = ui.presetSession;
   ui.presetSession = null; ui.selPresetId = null;
@@ -621,11 +607,13 @@ function syncControls() {
 
 function updateButtons() {
   const has = engine.hasSource();
-  $('#btnUndo').disabled = !store.canUndo();
-  $('#btnRedo').disabled = !store.canRedo();
-  $('#btnReset').disabled = !has || isNeutral(store.get());
-  $('#btnCompare').disabled = !has;
-  $('#btnExport').disabled = !has;
+  const printing = ui.mode === 'print';
+  $('#btnUndo').disabled = printing || !store.canUndo();
+  $('#btnRedo').disabled = printing || !store.canRedo();
+  $('#btnReset').disabled = printing || !has || isNeutral(store.get());
+  $('#btnCompare').disabled = printing || !has;
+  $('#btnExport').disabled = printing ? lib.items.length === 0 : !has;
+  $('#btnExport').textContent = printing ? 'Descargar PDF' : 'Exportar';
 }
 
 store.subscribe((edits, kind) => {
@@ -642,43 +630,152 @@ store.subscribe((edits, kind) => {
 
 function scheduleSave() {
   clearTimeout(ui.saveTimer);
-  ui.saveTimer = setTimeout(() => { if (ui.fileId) storage.saveEdits(ui.fileId, store.get()); }, 350);
+  ui.saveTimer = setTimeout(() => { saveCurrent(); }, 300);
 }
 
-// ---------- abrir fotos ----------
-async function openFile(file) {
-  if (!file) return;
-  if (!/^image\//.test(file.type) && !/\.(jpe?g|png|webp|heic|heif|avif|gif|bmp)$/i.test(file.name)) {
-    toast('Ese archivo no es una imagen compatible', true); return;
-  }
-  try {
-    let bmp;
-    try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
-    catch {
-      const url = URL.createObjectURL(file);
-      bmp = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('decode')); im.src = url; });
-    }
-    await showImage(bmp, file.name.replace(/\.[^.]+$/, ''), storage.fileKey(file));
-  } catch (err) {
-    toast('No se pudo abrir esa imagen. Si es HEIC o RAW, tu navegador puede no soportarlo.', true);
-    console.error(err);
-  }
+// ---------- biblioteca de fotos ----------
+const lib = new Library();
+let workEngine = null; let workId = null;
+const getWorkEngine = () => { if (!workEngine) workEngine = new Engine(document.createElement('canvas')); return workEngine; };
+
+// Motor de trabajo (miniaturas, impresión) con la foto de `rec` cargada.
+async function loadWork(rec) {
+  const we = getWorkEngine();
+  if (workId === rec.id && we.hasSource()) return we;
+  const bmp = await decodeBlob(rec.blob);
+  we.setSource(bmp); if (bmp.close) bmp.close();
+  workId = rec.id;
+  return we;
 }
 
-async function showImage(source, name, fileId) {
-  engine.setSource(source);
-  if (source.close) source.close();
-  ui.fileId = fileId; ui.fileName = name || 'foto';
+async function regenThumb(rec, edits) {
+  const we = await loadWork(rec);
+  we.render(edits, { maxW: 240, maxH: 240, upscale: false });
+  rec.thumb = await makeThumb(we.canvas, we.canvas.width, we.canvas.height);
+}
+
+// Guarda en disco los ajustes de la foto actual y actualiza su estado y miniatura.
+async function saveCurrent() {
+  if (!ui.photoId) return;
+  const rec = await storage.getPhoto(ui.photoId);
+  if (!rec) return;
+  const edits = clone(store.get());
+  const changed = JSON.stringify(rec.edits) !== JSON.stringify(edits);
+  if (!changed && rec.thumb) return;
+  rec.edits = edits;
+  rec.aspect = visibleAspect(edits, rec.width, rec.height);
+  if (changed) rec.status = statusAfterEdit(edits); // al editar, deja de estar aprobada
+  if (changed && engine.hasSource() && ui.mode === 'edit' && !ui.compare && !ui.cropMode) {
+    renderNow();
+    rec.thumb = await makeThumb(view, view.width, view.height);
+  }
+  await lib.put(rec);
+}
+
+const isImageFile = (f) => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif|avif|gif|bmp)$/i.test(f.name);
+
+async function openFiles(list) {
+  const files = [...list].filter(isImageFile);
+  if (!files.length) { toast('Ese archivo no es una imagen compatible', true); return; }
+  if (files.length > 1) toast(`Abriendo ${files.length} fotos…`);
+  let firstId = null; let failed = 0;
+  for (const [i, file] of files.entries()) {
+    try {
+      const id = storage.fileKey(file);
+      if (!(await storage.getPhoto(id))) {
+        const bmp = await decodeBlob(file);
+        const { w, h } = sizeOf(bmp);
+        const thumb = await makeThumb(bmp, w, h);
+        if (bmp.close) bmp.close();
+        await lib.put({
+          id, name: file.name.replace(/\.[^.]+$/, ''), blob: file, edits: defaultEdits(), status: 'pending', thumb,
+          addedAt: Date.now(), order: Date.now() + i, width: w, height: h, aspect: w / h,
+        });
+      }
+      firstId = firstId || id;
+    } catch (err) { failed++; console.error(err); }
+  }
+  if (failed) toast(`${failed} archivo(s) no se pudieron abrir. Si son HEIC o RAW, tu navegador puede no soportarlos.`, true);
+  if (firstId) await selectPhoto(firstId);
+}
+const openFile = (file) => (file ? openFiles([file]) : undefined);
+
+async function selectPhoto(id) {
+  const token = ++ui.loadToken;
+  if (ui.photoId && ui.photoId !== id) await saveCurrent();
+  const rec = await storage.getPhoto(id);
+  if (!rec) return;
+  const bmp = await decodeBlob(rec.blob);
+  if (token !== ui.loadToken) { if (bmp.close) bmp.close(); return; } // el usuario ya eligió otra
+  engine.setSource(bmp); if (bmp.close) bmp.close();
+  ui.photoId = id; ui.fileId = id; ui.fileName = rec.name;
   ui.cropMode = false; ui.cropDraft = null; ui.selMask = -1; ui.presetSession = null; ui.selPresetId = null;
-  const saved = fileId ? await storage.loadEdits(fileId) : null;
-  $('#empty').hidden = true; $('#canvasWrap').hidden = false;
-  store.load(saved || defaultEdits());
-  renderCropButtons(); updateOverlayMode(); setTab(ui.tab);
-  if (saved && !isNeutral(saved)) toast('Se recuperaron tus ajustes de esta foto');
-  requestRender();
+  $('#empty').hidden = true; document.body.classList.add('has-photos');
+  store.load(rec.edits);
+  lib.setCurrent(id); storage.kvSet('lastPhoto', id);
+  renderCropButtons(); updateOverlayMode(); setTab(ui.tab); updateButtons();
+  if (ui.mode === 'print') printUI.schedulePreview(); else requestRender();
 }
 
-function sampleImage() {
+function showEmpty() {
+  ui.photoId = null; engine.clearSource();
+  $('#empty').hidden = false; document.body.classList.remove('has-photos');
+  updateButtons();
+}
+
+// Aplica una transformación de ajustes a varias fotos (la actual y/o otras guardadas).
+async function batchUpdate(ids, fn) {
+  let n = 0;
+  for (const id of ids) {
+    if (id === ui.photoId) { store.replace(fn(clone(store.get()), lib.get(id)), true); await saveCurrent(); n++; continue; }
+    const rec = await storage.getPhoto(id);
+    if (!rec) continue;
+    const next = fn(clone(rec.edits), rec);
+    if (JSON.stringify(next) === JSON.stringify(rec.edits)) continue;
+    rec.edits = next; rec.aspect = visibleAspect(next, rec.width, rec.height); rec.status = statusAfterEdit(next);
+    try { await regenThumb(rec, next); } catch { /* sin miniatura nueva */ }
+    await lib.put(rec); n++;
+  }
+  return n;
+}
+
+async function toggleApprove() {
+  if (!ui.photoId) return;
+  await saveCurrent();
+  const rec = await storage.getPhoto(ui.photoId);
+  rec.status = toggleApproved(rec.status);
+  await lib.put(rec);
+  if (rec.status === 'approved') {
+    const next = nextToReview(lib.items, ui.photoId);
+    if (next) selectPhoto(next); else toast('Todas las fotos están aprobadas. Pasa a Imprimir.');
+  }
+}
+
+async function filmstripAction(act) {
+  if (act === 'approve') return toggleApprove();
+  if (act === 'copy') { ui.clip = clone(store.get()); toast('Ajustes copiados'); lib.emit(); return undefined; }
+  if (act === 'paste') {
+    if (!ui.clip) return undefined;
+    const ids = [...lib.selected];
+    if (!ids.length) { toast('Marca primero las fotos donde quieres pegar (casilla de cada miniatura)', true); return undefined; }
+    const n = await batchUpdate(ids, (e) => pasteEdits(e, ui.clip));
+    toast(`Ajustes pegados en ${n} foto${n === 1 ? '' : 's'}`); return undefined;
+  }
+  if (act === 'selectAll') { lib.selectAll(lib.selected.size !== lib.items.length); return undefined; }
+  if (act === 'remove') return removePhotos();
+  return undefined;
+}
+
+async function removePhotos() {
+  const ids = lib.selected.size ? [...lib.selected] : (ui.photoId ? [ui.photoId] : []);
+  if (!ids.length) return;
+  if (!confirm(`¿Quitar ${ids.length} foto${ids.length === 1 ? '' : 's'} de la biblioteca? Se borran también sus ajustes (tu archivo original no se toca).`)) return;
+  const removingCurrent = ids.includes(ui.photoId);
+  await lib.remove(ids);
+  if (removingCurrent) { const next = lib.items[0]; if (next) await selectPhoto(next.id); else showEmpty(); }
+}
+
+async function sampleImage() {
   const w = 1600; const h = 1067;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const g = c.getContext('2d');
@@ -697,16 +794,24 @@ function sampleImage() {
   const colors = ['#d8453b', '#f0a431', '#3a7bd5', '#e8e0d0'];
   colors.forEach((col, i) => { g.fillStyle = col; g.fillRect(60 + i * 62, h - 90, 48, 48); });
   g.fillStyle = 'rgba(255,255,255,.9)'; g.font = '600 28px system-ui, sans-serif'; g.fillText('Imagen de ejemplo', 60, h - 110);
-  showImage(c, 'ejemplo', null);
+  const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
+  await openFiles([new File([blob], 'ejemplo.png', { type: 'image/png', lastModified: 1 })]);
+}
+
+// ---------- modo Editar / Imprimir ----------
+let printUI = null;
+function setMode(mode) {
+  ui.mode = mode;
+  document.body.dataset.mode = mode;
+  document.querySelectorAll('#modeSwitch button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
+  if (mode === 'print') {
+    if (ui.cropMode) endCrop(false);
+    saveCurrent().then(() => { printUI.build(); printUI.schedulePreview(); });
+  } else { requestRender(); }
+  updateOverlayMode(); updateButtons();
 }
 
 // ---------- exportar ----------
-function download(blob, filename) {
-  const a = el('a', { href: URL.createObjectURL(blob), download: filename });
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-}
-
 function openExportDialog() {
   const dlg = $('#exportDlg');
   const g = engine.geometryInfo(store.get(), false);
@@ -740,7 +845,7 @@ function wire() {
   $('#btnOpen').addEventListener('click', () => fileInput.click());
   $('#btnOpen2').addEventListener('click', () => fileInput.click());
   $('#btnSample').addEventListener('click', sampleImage);
-  fileInput.addEventListener('change', () => { openFile(fileInput.files[0]); fileInput.value = ''; });
+  fileInput.addEventListener('change', () => { openFiles(fileInput.files); fileInput.value = ''; });
 
   $('#filePresets').addEventListener('change', async (ev) => {
     const files = [...ev.target.files]; ev.target.value = '';
@@ -750,7 +855,8 @@ function wire() {
   $('#btnUndo').addEventListener('click', () => store.undo());
   $('#btnRedo').addEventListener('click', () => store.redo());
   $('#btnReset').addEventListener('click', () => { if (confirm('¿Restablecer todos los ajustes de esta foto? Podrás deshacerlo.')) store.reset(); });
-  $('#btnExport').addEventListener('click', openExportDialog);
+  $('#btnExport').addEventListener('click', () => (ui.mode === 'print' ? printUI.exportPdf() : openExportDialog()));
+  $('#modeSwitch').addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (b) setMode(b.dataset.mode); });
   $('#expType').addEventListener('change', () => { $('#expQualityRow').hidden = $('#expType').value === 'image/png'; });
   $('#expQuality').addEventListener('input', () => { $('#expQualityOut').textContent = $('#expQuality').value; });
   $('#exportDlg').addEventListener('close', () => { if ($('#exportDlg').returnValue === 'go') doExport(); });
@@ -764,33 +870,51 @@ function wire() {
 
   window.addEventListener('keydown', (e) => {
     const t = e.target;
-    if (t && (t.tagName === 'INPUT' && t.type === 'text' || t.tagName === 'SELECT')) return;
+    if (t && ((t.tagName === 'INPUT' && (t.type === 'text' || t.type === 'search' || t.type === 'number')) || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? store.redo() : store.undo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); store.redo(); }
     else if (e.key === '\\') setCompare(true);
+    else if (!mod && !e.altKey && e.key.toLowerCase() === 'a' && t.tagName !== 'INPUT') toggleApprove();
+    else if (!mod && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && t.tagName !== 'INPUT' && ui.photoId) { const id = neighbor(lib.items, ui.photoId, e.key === 'ArrowRight' ? 1 : -1); if (id && id !== ui.photoId) selectPhoto(id); }
   });
   window.addEventListener('keyup', (e) => { if (e.key === '\\') setCompare(false); });
 
   window.addEventListener('resize', requestRender);
-  new ResizeObserver(requestRender).observe($('#stage'));
+  new ResizeObserver(() => { requestRender(); if (ui.mode === 'print') printUI.schedulePreview(); }).observe($('#viewport'));
 
   const stage = $('#stage');
   stage.addEventListener('dragover', (e) => { e.preventDefault(); stage.classList.add('dragover'); });
   stage.addEventListener('dragleave', () => stage.classList.remove('dragover'));
-  stage.addEventListener('drop', (e) => { e.preventDefault(); stage.classList.remove('dragover'); openFile(e.dataTransfer.files[0]); });
-  window.addEventListener('paste', (e) => { const f = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/')); if (f) openFile(f); });
+  stage.addEventListener('drop', (e) => { e.preventDefault(); stage.classList.remove('dragover'); openFiles(e.dataTransfer.files); });
+  window.addEventListener('paste', (e) => { const f = [...(e.clipboardData?.files || [])].filter((x) => x.type.startsWith('image/')); if (f.length) openFiles(f); });
 }
 
 // ---------- arranque ----------
 async function init() {
   buildAdjustTab(); buildCurvesTab(); buildGeometryTab(); buildMasksTab(); buildPresetsTab();
+  createFilmstrip($('#filmstrip'), lib, { onSelect: (id) => selectPhoto(id), onAction: filmstripAction, hasClipboard: () => !!ui.clip });
+  printUI = createPrintUI({ lib, loadWork, flush: saveCurrent, getCurrentId: () => ui.photoId, toast, sliderRow, download });
+  printUI.setCropAllHandler(async (ids, aspectFor) => {
+    // cada foto conserva su centro; el recorte pasa a la proporción de SU ventana (según su orientación)
+    const n = await batchUpdate(ids, (e, rec) => cropForAspect(e, aspectFor(visibleAspect(e, rec.width, rec.height)), rec.width, rec.height));
+    toast(n ? `Recorte ajustado al marco en ${n} foto${n === 1 ? '' : 's'}` : 'Ya estaban recortadas a la forma del marco');
+  });
   wire(); updateButtons();
   try { ui.userPresets = await storage.listPresets(); buildPresetsTab(); } catch { /* sin presets propios */ }
+  try {
+    await lib.load();
+    await printUI.init();
+    if (lib.items.length) {
+      const last = await storage.kvGet('lastPhoto');
+      await selectPhoto(lib.get(last) ? last : lib.items[0].id);
+    }
+  } catch (err) { console.error(err); }
+  updateButtons();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost') && !location.search.includes('nosw')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  window.__app = { engine, store, ui, showImage, sampleImage, openFile, requestRender, renderNow };
+  window.__app = { engine, store, ui, lib, sampleImage, openFile, openFiles, selectPhoto, requestRender, renderNow, setMode, printUI, batchUpdate, saveCurrent };
   window.__appReady = true;
 }
 init();
