@@ -1446,6 +1446,7 @@ function wire() {
   fileInput.addEventListener('change', () => { openFiles(fileInput.files); fileInput.value = ''; });
 
   $('#fileAutoTest').addEventListener('change', (ev) => { const f = ev.target.files[0]; ev.target.value = ''; autoUI.testWith(f); });
+  $('#fileAutoCapture').addEventListener('change', (ev) => { const f = ev.target.files[0]; ev.target.value = ''; autoUI.testWith(f); });
   $('#fileLook').addEventListener('change', async (ev) => {
     const files = [...ev.target.files]; ev.target.value = '';
     if (files.length) await importLooks(files);

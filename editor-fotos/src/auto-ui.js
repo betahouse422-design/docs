@@ -16,7 +16,7 @@ import { FolderWatcher, AutoQueue, STATES, folderAccessSupported, outputName } f
 const DEFAULT_CFG = {
   collection: 'starter', presetId: 'natural', intensity: 100,
   autoTone: true, autoWb: false, cropToFrame: true,
-  output: 'folder',          // 'folder' = guardar en carpeta · 'print' = imprimir directo · 'hold' = solo preparar
+  output: 'folder',          // 'folder' = carpeta de impresión · 'download' = descargar/compartir (teléfono) · 'print' = imprimir directo · 'hold' = solo preparar
   format: 'jpg',             // 'jpg' | 'pdf' | 'both'
   requireApproval: false, includeExisting: false,
 };
@@ -31,7 +31,7 @@ function sanitizeCfg(raw) {
     presetId: typeof r.presetId === 'string' ? r.presetId : DEFAULT_CFG.presetId,
     intensity: num(r.intensity, 0, 100, 100),
     autoTone: r.autoTone !== false, autoWb: !!r.autoWb, cropToFrame: r.cropToFrame !== false,
-    output: pick(r.output, ['folder', 'print', 'hold'], 'folder'), format: pick(r.format, ['jpg', 'pdf', 'both'], 'jpg'),
+    output: pick(r.output, ['folder', 'download', 'print', 'hold'], 'folder'), format: pick(r.format, ['jpg', 'pdf', 'both'], 'jpg'),
     requireApproval: !!r.requireApproval, includeExisting: !!r.includeExisting,
   };
 }
@@ -67,6 +67,7 @@ export function createAutoUI(ctx) {
   // ------------------------------------------------------------------ configuración guardada
   async function init() {
     S.cfg = sanitizeCfg(await storage.kvGet('autoConfig'));
+    if (!folderAccessSupported() && S.cfg.output === 'folder') S.cfg.output = 'download'; // teléfono / navegador sin carpetas
     try { S.watchDir = (await storage.kvGet('autoWatchDir')) || null; S.outDir = (await storage.kvGet('autoOutDir')) || null; } catch { /* sin carpetas guardadas */ }
     S.counter = Number(await storage.kvGet('autoCounter')) || 0;
     S.queue.on(renderQueue);
@@ -124,7 +125,7 @@ export function createAutoUI(ctx) {
 
     const outFolder = S.cfg.output === 'folder';
     const parts = [
-      !supported ? el('p', { class: 'warn' }, 'Este navegador no puede vigilar una carpeta. Abre la app en Google Chrome o Microsoft Edge para usar el modo automático.') : null,
+      !supported ? el('p', { class: 'warn' }, 'Este navegador (o el teléfono) no puede vigilar una carpeta. Aquí usa "Tomar foto y procesar". Para vigilar la carpeta de la cámara, abre la app en Google Chrome o Edge en la computadora.') : null,
       section('1 · Carpeta donde llegan las fotos',
         el('div', { class: 'row' }, el('button', { class: 'btn small', type: 'button', id: 'btnAutoWatch', disabled: S.running || !supported, onClick: () => chooseFolder('watch') }, S.watchDir ? 'Cambiar carpeta…' : 'Elegir carpeta…'),
           el('span', { class: 'hint', id: 'autoWatchName' }, S.watchDir ? S.watchDir.name : 'Sin carpeta')),
@@ -143,11 +144,13 @@ export function createAutoUI(ctx) {
           el('span', { class: 'hint', id: 'autoOutName' }, S.outDir ? S.outDir.name : 'Sin carpeta')) : null,
         outFolder ? el('label', { class: 'pfield indent' }, el('span', {}, 'Formato'),
           (() => { const s = el('select', { class: 'field', id: 'autoFormat', disabled: S.running }, [['jpg', 'JPEG'], ['pdf', 'PDF'], ['both', 'JPEG y PDF']].map(([v, l]) => el('option', { value: v, selected: v === S.cfg.format }, l))); s.addEventListener('change', () => { S.cfg.format = s.value; saveCfg(); }); return s; })()) : null,
+        radio('autoOut', 'download', 'Descargar o compartir (para probar, o en el teléfono)', S.cfg.output === 'download', (v) => { S.cfg.output = v; saveCfg(); build(); }, S.running),
         radio('autoOut', 'print', 'Mandar a imprimir (abre el diálogo de impresión)', S.cfg.output === 'print', (v) => { S.cfg.output = v; saveCfg(); build(); }, S.running),
         radio('autoOut', 'hold', 'Solo preparar (las dejo en la biblioteca)', S.cfg.output === 'hold', (v) => { S.cfg.output = v; saveCfg(); build(); }, S.running),
         check('requireApproval', 'Pedir mi aprobación antes de imprimir o guardar')),
       el('div', { class: 'row' },
         el('button', { class: 'btn primary big', type: 'button', id: 'btnAutoStart', onClick: () => (S.running ? stop() : start()) }, S.running ? 'Detener' : 'Empezar'),
+        el('button', { class: 'btn', type: 'button', id: 'btnAutoCapture', disabled: S.running, onClick: () => $('#fileAutoCapture').click(), title: 'Abre la cámara del teléfono (o elige una foto) y la pasa por el flujo' }, '📷 Tomar foto y procesar'),
         el('button', { class: 'btn', type: 'button', id: 'btnAutoTest', disabled: S.running, onClick: () => $('#fileAutoTest').click(), title: 'Procesa una foto de tu computadora con esta misma configuración, sin cámara' }, 'Probar con una foto…')),
       el('p', { class: 'hint' }, 'Al empezar, solo se procesan las fotos nuevas que lleguen a la carpeta. Deja esta pestaña abierta durante el evento.'),
     ];
@@ -180,7 +183,11 @@ export function createAutoUI(ctx) {
     const actions = [];
     if (it.status === 'review') actions.push(el('button', { class: 'btn small primary', type: 'button', 'data-act': 'approve', onClick: () => approve(it.id) }, 'Aprobar'), el('button', { class: 'btn small', type: 'button', 'data-act': 'discard', onClick: () => discard(it.id) }, 'Descartar'));
     if (it.status === 'error') actions.push(el('button', { class: 'btn small', type: 'button', 'data-act': 'retry', onClick: () => retry(it.id) }, 'Reintentar'));
-    if (it.status === 'done' && S.cfg.output !== 'hold' && it.pages) actions.push(el('button', { class: 'btn small', type: 'button', 'data-act': 'again', title: 'Imprimir o guardar otra vez', onClick: () => again(it.id) }, 'Otra copia'));
+    if (it.status === 'done' && it.ready && it.pages) {
+      actions.push(el('button', { class: 'btn small primary', type: 'button', 'data-act': 'dl-jpg', onClick: () => downloadPage(it, 'jpg') }, 'Descargar JPEG'), el('button', { class: 'btn small', type: 'button', 'data-act': 'dl-pdf', onClick: () => downloadPage(it, 'pdf') }, 'Descargar PDF'));
+      if (canShareFiles()) actions.push(el('button', { class: 'btn small', type: 'button', 'data-act': 'share', onClick: () => shareFirst(it) }, 'Compartir'));
+    }
+    if (it.status === 'done' && S.cfg.output !== 'hold' && !it.ready && it.pages) actions.push(el('button', { class: 'btn small', type: 'button', 'data-act': 'again', title: 'Imprimir o guardar otra vez', onClick: () => again(it.id) }, 'Otra copia'));
     return el('div', { class: 'autorow', 'data-id': it.id, 'data-status': it.status },
       url ? el('img', { src: url, alt: it.name, class: 'autothumb' }) : el('span', { class: 'autothumb noimg' }),
       el('div', { class: 'autoinfo' }, el('div', { class: 'autoname' }, it.name), statusChip(it), it.error ? el('div', { class: 'autoerr' }, it.error) : null, it.note ? el('div', { class: 'hint' }, it.note) : null),
@@ -260,6 +267,8 @@ export function createAutoUI(ctx) {
       if (S.cfg.format !== 'pdf') for (let i = 0; i < pages.length; i++) { const n = outputName(baseName(it.name), S.counter * 10 + i, 'jpg'); await writeFile(n, pages[i].jpeg); names.push(n); }
       if (S.cfg.format !== 'jpg') { const n = outputName(baseName(it.name), S.counter, 'pdf'); await writeFile(n, printUI.pdfBytes(pages, baseName(it.name))); names.push(n); }
       S.queue.update(it.id, { status: 'done', note: `Guardada: ${names.join(', ')}` });
+    } else if (S.cfg.output === 'download') {
+      S.queue.update(it.id, { status: 'done', note: 'Lista: toca Descargar o Compartir', ready: true });
     } else if (S.cfg.output === 'print') {
       S.queue.update(it.id, { status: 'printing' });
       await printUI.printPages(pages);
@@ -278,6 +287,24 @@ export function createAutoUI(ctx) {
   async function again(id) {
     const it = S.queue.get(id); if (!it || !it.pages) return;
     try { await deliver(it); } catch (err) { S.queue.update(id, { status: 'error', error: (err && err.message) || String(err) }); }
+  }
+
+  // Descargar / compartir desde el teléfono (hay que tocar el botón: el navegador exige un gesto del usuario)
+  const fileOf = (it, kind) => {
+    const base = baseName(it.name);
+    if (kind === 'pdf') return new File([printUI.pdfBytes(it.pages, base)], outputName(base, 1, 'pdf'), { type: 'application/pdf' });
+    return new File([it.pages[0].jpeg], outputName(base, 1, 'jpg'), { type: 'image/jpeg' });
+  };
+  function canShareFiles() {
+    try { return !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(1)], 'a.jpg', { type: 'image/jpeg' })] })); } catch { return false; }
+  }
+  function downloadPage(it, kind) {
+    const f = fileOf(it, kind); const url = URL.createObjectURL(f);
+    const a = el('a', { href: url, download: f.name }); document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+  async function shareFirst(it) {
+    try { await navigator.share({ files: [fileOf(it, 'jpg')], title: baseName(it.name) }); } catch (err) { if (err && err.name !== 'AbortError') toast('No se pudo compartir; usa Descargar', true); }
   }
 
   // Probar con un archivo de la computadora (sin cámara): pasa por exactamente el mismo camino

@@ -175,6 +175,37 @@ t('probar con una foto de la computadora usa el mismo camino; sin carpeta de sal
   await ctx.close();
 });
 
+t('teléfono: sin carpetas, "Tomar foto y procesar" pasa por el flujo y deja Descargar JPEG / PDF', async () => {
+  // un teléfono: pantalla angosta, táctil y SIN showDirectoryPicker (como Safari o Chrome en Android)
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true, acceptDownloads: true });
+  await ctx.addInitScript(() => { try { delete window.showDirectoryPicker; } catch { window.showDirectoryPicker = undefined; } });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push('pageerror: ' + e));
+  await page.goto(`http://127.0.0.1:${port}/index.html?nosw`);
+  await page.waitForFunction(() => window.__appReady === true);
+  await page.evaluate(() => window.__app.setMode('auto'));
+  assert.equal(await page.evaluate(() => window.__app.autoUI.state.cfg.output), 'download', 'sin carpetas, la salida por defecto es descargar');
+  assert.match(await page.locator('#autoBody .warn').innerText(), /Tomar foto y procesar/);
+  assert.equal(await page.locator('#btnAutoWatch').isDisabled(), true, 'no se puede elegir carpeta aquí');
+  await config(page, { presetId: 'vivido', autoTone: true, requireApproval: false });
+  // "toma" la foto con la cámara del teléfono
+  await page.locator('#fileAutoCapture').setInputFiles({ name: 'IMG_0001.png', mimeType: 'image/png', buffer: Buffer.from(await png(page, 1200, 900, '#c05030'), 'base64') });
+  await waitDone(page, 1);
+  await page.locator('#autoList .autorow').first().scrollIntoViewIfNeeded();
+  await shot(page, '33-automatico-telefono-listo');
+  assert.equal(await page.locator('[data-act="dl-jpg"]').count(), 1); assert.equal(await page.locator('[data-act="dl-pdf"]').count(), 1);
+  const [dj] = await Promise.all([page.waitForEvent('download', { timeout: 30000 }), page.locator('[data-act="dl-jpg"]').tap()]);
+  assert.match(dj.suggestedFilename(), /_IMG_0001\.jpg$/);
+  const { readFileSync } = await import('node:fs');
+  const jpg = readFileSync(await dj.path());
+  assert.equal(readIccHeader(extractIccFromJpeg(jpg)).description, 'sRGB (Editor de fotos)');
+  const [dp] = await Promise.all([page.waitForEvent('download', { timeout: 30000 }), page.locator('[data-act="dl-pdf"]').tap()]);
+  assert.equal(readFileSync(await dp.path()).slice(0, 5).toString(), '%PDF-');
+  // el panel y la lista caben en la pantalla del teléfono
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1), false);
+  await ctx.close();
+});
+
 t('teléfono y pantalla angosta: el panel automático cabe y los botones se ven', async () => {
   const { page, ctx } = await newPage({ width: 390, height: 800 });
   await page.evaluate(() => window.__app.setMode('auto'));

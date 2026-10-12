@@ -50,6 +50,14 @@ y abre <http://localhost:8080/> en Chrome. (Debe ser `localhost`: así Chrome pe
 3. Pestaña **Automático**: sigue `docs/FLUJO_AUTOMATICO.md` (carpeta de la cámara, preset, salida).
 4. Chrome pedirá permiso para leer y escribir en las carpetas: pulsa **Permitir**.
 
+## 4b. Abrirlo también en el teléfono (para probar)
+
+En la computadora, en vez del comando normal, usa:
+```
+node tests/serve.mjs 8080 --lan
+```
+Escribe en el teléfono (mismo Wi-Fi) la dirección que aparece en **"En tu teléfono"**. Detalles en `docs/FLUJO_AUTOMATICO.md`.
+
 ## 5. Para que imprima sola (opcional)
 
 Cierra Chrome por completo y ábrelo con impresión directa a la impresora predeterminada:

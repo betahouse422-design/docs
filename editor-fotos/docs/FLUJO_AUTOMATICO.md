@@ -66,3 +66,27 @@ Cámara ──► carpeta de la cámara ──► app (Automático) ──► pr
 - Si Chrome pide permiso de nuevo o se cierra, hay que volver a pulsar **Empezar**. Las fotos ya procesadas no se repiten.
 - Probado con carpetas simuladas en Chrome y con RAW/JPEG de prueba; **no lo he probado con tu cámara ni tu impresora**. Haz un
   ensayo completo antes del evento.
+
+## Probar el flujo desde el teléfono
+
+En el teléfono no se puede vigilar una carpeta (ni Safari ni Chrome de Android lo permiten), pero sí probar el mismo camino
+**foto → preset → marco con logo → resultado** con el botón **📷 Tomar foto y procesar**: abre la cámara, y la foto pasa por
+exactamente el mismo flujo que en la computadora. Sirve para ensayar el preset, el marco y el logo con tus manos.
+
+**Opción A: abrirlo desde tu computadora por Wi-Fi** (el teléfono y la computadora deben estar en la misma red):
+1. En la computadora, dentro de la carpeta `editor-fotos`: `node tests/serve.mjs 8080 --lan`
+2. Mira la línea **"En tu teléfono (mismo Wi-Fi): http://192.168.x.x:8080/"** y escribe esa dirección en el navegador del teléfono.
+3. Cuando termines, cierra el servidor con Ctrl+C (mientras corre, cualquier aparato de tu red puede abrir esa dirección).
+
+**Opción B: dejarlo publicado en internet con HTTPS** (para instalarlo como app en el teléfono y no depender de la computadora):
+dime y lo preparo en GitHub Pages.
+
+En el teléfono:
+1. Pestaña **Imprimir**: crea el restaurante, carga el logo (desde Fotos o Archivos), elige papel y marco.
+2. Pestaña **Automático**: elige el preset. La salida queda en **Descargar o compartir**.
+3. Pulsa **📷 Tomar foto y procesar**, toma la foto y espera unos segundos.
+4. En la lista aparece la foto con **Descargar JPEG**, **Descargar PDF** y, si tu teléfono lo permite, **Compartir** (por ejemplo, a AirDrop o WhatsApp).
+
+Lo que el teléfono guarda (restaurantes, logos, presets, fotos) es independiente de lo que hay en la computadora.
+Limitaciones: es una prueba del flujo, no la versión para el evento (esa necesita la computadora con la cámara conectada).
+Probado con un teléfono simulado; **no lo he probado en un iPhone ni en un Android reales**.
