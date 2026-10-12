@@ -90,3 +90,37 @@ En el teléfono:
 Lo que el teléfono guarda (restaurantes, logos, presets, fotos) es independiente de lo que hay en la computadora.
 Limitaciones: es una prueba del flujo, no la versión para el evento (esa necesita la computadora con la cámara conectada).
 Probado con un teléfono simulado; **no lo he probado en un iPhone ni en un Android reales**.
+
+
+## Tomar la foto con el teléfono y que llegue a la computadora (buzón)
+
+Es el flujo completo con el teléfono como cámara: **tomas la foto en el teléfono → se manda a la computadora → la web de la
+computadora le pone el preset, la pasa al marco con el logo y la entrega/imprime.**
+
+```
+Teléfono (página /enviar) ──► servidor de la computadora (carpeta "buzon") ──► app en la computadora (Automático) ──► preset ─► marco ─► salida
+```
+
+**En la computadora (una vez por sesión):**
+1. En la carpeta `editor-fotos`: `node tests/serve.mjs 8080`. Al arrancar imprime el **código del teléfono**, por ejemplo
+   `K7M2-9XQD` (es el mismo cada vez que lo reinicias).
+2. Para que el teléfono llegue desde cualquier red, en otra Terminal: `npx cloudflared tunnel --url http://localhost:8080`
+   y copia la dirección `https://….trycloudflare.com` que imprime. (Si el teléfono y la computadora se ven en tu Wi-Fi puedes usar
+   `--lan` y la dirección `http://192.168…` en vez del túnel.)
+3. Abre **http://localhost:8080** en Chrome, pestaña **Automático**:
+   - **1 · De dónde llegan las fotos** → "Buzón de esta app". Pega la **dirección del túnel**: aparece el **enlace para el teléfono**
+     (`…/enviar?c=CODIGO`). Pulsa **Copiar enlace**.
+   - Elige restaurante, preset y qué hacer con cada foto; pulsa **Empezar**.
+4. Mándate ese enlace al teléfono (AirDrop, iMessage, Notas…).
+
+**En el teléfono:** abre el enlace, pulsa **📷 Tomar foto** y listo: aparece "✓ Enviada". La computadora la recibe en segundos y
+sigue el flujo. El teléfono recuerda el código; la próxima vez basta abrir la misma dirección.
+
+**Seguridad (importante si usas un túnel):**
+- Subir fotos desde fuera **exige el código**; hay límite de intentos equivocados.
+- Desde fuera **no se puede leer** nada del buzón (ni listarlo ni bajarlo): solo la computadora lo lee.
+- Solo se aceptan fotos (JPEG, PNG, HEIC, RAW…) de hasta 120 MB; una foto HEIC se convierte a JPEG en el teléfono.
+- Cualquiera que tenga la dirección del túnel puede abrir la app (está vacía: tus fotos y presets viven en cada navegador), pero no
+  puede mandar fotos sin el código. Cierra el túnel (Ctrl+C) al terminar. El código es de la sesión de trabajo: si crees que se
+  filtró, borra el archivo `buzon/.codigo` y reinicia el servidor para generar otro.
+- Las fotos enviadas quedan en la carpeta `editor-fotos/buzon` de la computadora.

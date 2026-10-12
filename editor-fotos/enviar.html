@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0f12">
+<title>Enviar foto</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg: #0e0f12; --panel: #17181c; --line: #2a2c33; --text: #eceef3; --muted: #9aa0ad; --accent: #ffb347; --ok: #4cd964; --bad: #ff6b6b; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f4f5f7; --panel: #fff; --line: #d9dce3; --text: #14161a; --muted: #5a6070; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  main { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  h1 { font-size: 22px; margin: 4px 0 0; }
+  p { margin: 0; color: var(--muted); font-size: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+  input[type=text] { width: 100%; font: inherit; font-size: 20px; letter-spacing: .15em; text-transform: uppercase; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--text); }
+  .btn { font: inherit; font-weight: 600; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 16px; min-height: 56px; width: 100%; }
+  .btn.primary { background: var(--accent); color: #1a1100; border-color: transparent; font-size: 18px; }
+  .btn:disabled { opacity: .5; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+  .row img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; background: #000; flex: none; }
+  .row .info { flex: 1; min-width: 0; }
+  .row .name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st { font-size: 13px; color: var(--muted); } .st.ok { color: var(--ok); } .st.bad { color: var(--bad); }
+  .bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 6px; } .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .small { font-size: 13px; padding: 8px 12px; min-height: 0; width: auto; }
+  #msg { color: var(--bad); font-size: 14px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Enviar foto a la computadora</h1>
+  <p>Toma la foto y se manda sola al editor de la computadora, que le pone el preset y el marco.</p>
+
+  <div class="card" id="codeCard">
+    <div>
+      <label for="code">Código (lo ves en la computadora)</label>
+      <input id="code" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9" placeholder="ABCD-2345">
+    </div>
+    <div id="msg" role="status"></div>
+  </div>
+
+  <input id="cam" type="file" accept="image/*" capture="environment" hidden>
+  <input id="gal" type="file" accept="image/*,.dng,.arw,.cr2,.cr3,.nef,.raf,.orf,.rw2" multiple hidden>
+  <button class="btn primary" id="btnCam" type="button">📷 Tomar foto</button>
+  <button class="btn" id="btnGal" type="button">Elegir de la galería…</button>
+
+  <div id="list" style="display:flex;flex-direction:column;gap:8px"></div>
+</main>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const codeEl = $('#code'); const msg = $('#msg'); const list = $('#list');
+  const store = { get(k) { try { return localStorage.getItem(k) || ''; } catch { return ''; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } } };
+  const params = new URLSearchParams(location.search);
+  codeEl.value = (params.get('c') || params.get('code') || store.get('envioCodigo')).toUpperCase();
+  const clean = () => codeEl.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  codeEl.addEventListener('input', () => {
+    const c = clean().slice(0, 8); codeEl.value = c.length > 4 ? `${c.slice(0, 4)}-${c.slice(4)}` : c; store.set('envioCodigo', codeEl.value); msg.textContent = '';
+  });
+  codeEl.dispatchEvent(new Event('input'));
+
+  const isHeic = (f) => /\.(heic|heif)$/i.test(f.name) || /image\/hei[cf]/i.test(f.type);
+  // Una foto HEIC (iPhone) se convierte aquí a JPEG: así la computadora siempre la puede abrir.
+  async function prepare(file) {
+    if (!isHeic(file)) return file;
+    const bmp = await createImageBitmap(file);
+    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; c.getContext('2d').drawImage(bmp, 0, 0);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.95));
+    if (!blob) throw new Error('No se pudo convertir la foto');
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+  }
+
+  function upload(file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `/api/upload?name=${encodeURIComponent(file.name)}`);
+      xhr.setRequestHeader('x-code', clean());
+      xhr.setRequestHeader('content-type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+      xhr.onload = () => { let j = {}; try { j = JSON.parse(xhr.responseText); } catch { /* no es JSON */ } xhr.status === 200 && j.ok ? resolve(j) : reject(new Error(j.error || `Error ${xhr.status}`)); };
+      xhr.onerror = () => reject(new Error('Sin conexión con la computadora'));
+      xhr.send(file);
+    });
+  }
+
+  function addRow(file) {
+    const row = document.createElement('div'); row.className = 'row';
+    const img = document.createElement('img'); const url = /^image\/(jpeg|png|webp|gif)/.test(file.type) ? URL.createObjectURL(file) : '';
+    if (url) { img.src = url; img.onload = () => URL.revokeObjectURL(url); } else img.alt = '';
+    const info = document.createElement('div'); info.className = 'info';
+    const name = document.createElement('div'); name.className = 'name'; name.textContent = file.name;
+    const st = document.createElement('div'); st.className = 'st'; st.textContent = 'Esperando…';
+    const bar = document.createElement('div'); bar.className = 'bar'; const fill = document.createElement('i'); bar.append(fill);
+    info.append(name, st, bar); row.append(img, info); list.prepend(row);
+    return { row, st, fill, info };
+  }
+
+  async function send(file, ui) {
+    ui.st.className = 'st'; ui.st.textContent = 'Enviando…';
+    const retry = ui.info.querySelector('button'); if (retry) retry.remove();
+    try {
+      const f = await prepare(file);
+      await upload(f, (p) => { ui.fill.style.width = `${Math.round(p * 100)}%`; ui.st.textContent = `Enviando… ${Math.round(p * 100)}%`; });
+      ui.fill.style.width = '100%'; ui.st.className = 'st ok'; ui.st.textContent = '✓ Enviada';
+    } catch (err) {
+      ui.st.className = 'st bad'; ui.st.textContent = '✕ ' + err.message;
+      if (/código/i.test(err.message)) { msg.textContent = err.message + ' Revisa el código que aparece en la computadora.'; codeEl.focus(); }
+      const b = document.createElement('button'); b.className = 'btn small'; b.type = 'button'; b.textContent = 'Reintentar'; b.onclick = () => send(file, ui); ui.info.append(b);
+    }
+  }
+
+  async function handle(files) {
+    if (clean().length < 6) { msg.textContent = 'Escribe primero el código de la computadora.'; codeEl.focus(); return; }
+    for (const f of files) { const ui = addRow(f); await send(f, ui); }
+  }
+  $('#btnCam').addEventListener('click', () => $('#cam').click());
+  $('#btnGal').addEventListener('click', () => $('#gal').click());
+  for (const id of ['#cam', '#gal']) $(id).addEventListener('change', (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) handle(fs); });
+})();
+</script>
+</body>
+</html>

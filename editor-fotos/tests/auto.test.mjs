@@ -2,12 +2,13 @@
 // misma API que una carpeta real) -> preset -> marco -> carpeta de salida / impresora / aprobación.
 // Uso: node tests/auto.test.mjs [carpeta-para-capturas]
 import { chromium } from 'playwright-core';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { startServer } from './serve.mjs';
+import { startServer as startInboxServer } from '../tools/servidor.mjs';
 import { makeDng, patchesColor } from './make-dng.mjs';
 import { extractIccFromJpeg, readIccHeader } from '../src/icc.js';
 
@@ -175,6 +176,65 @@ t('probar con una foto de la computadora usa el mismo camino; sin carpeta de sal
   await ctx.close();
 });
 
+t('del teléfono a la computadora: el teléfono sube la foto con el código, el buzón la entrega y el flujo la procesa', async () => {
+  const inbox = mkdtempSync(join(tmpdir(), 'buzon-'));
+  const srv = await startInboxServer(0, '127.0.0.1', { inbox, code: 'ABCD2345', restrict: true });
+  const base = `http://127.0.0.1:${srv.port}`;
+  try {
+    // la computadora: la app abierta en localhost, modo automático, fuente = buzón
+    const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const dpage = await desk.newPage();
+    dpage.on('pageerror', (e) => errors.push('pageerror: ' + e));
+    await dpage.goto(`${base}/index.html?nosw`);
+    await dpage.waitForFunction(() => window.__appReady === true);
+    await dpage.evaluate(() => window.__app.setMode('auto'));
+    assert.equal(await dpage.evaluate(() => window.__app.autoUI.state.cfg.source), 'inbox', 'con servidor local, la fuente por defecto es el buzón');
+    assert.equal(await dpage.locator('#inboxCode').innerText(), 'ABCD-2345');
+    await dpage.locator('#autoTunnel').fill('https://prueba.trycloudflare.com'); await dpage.locator('#autoTunnel').dispatchEvent('change');
+    await dpage.waitForFunction(() => document.getElementById('inboxLink'));
+    assert.equal(await dpage.locator('#inboxLink').innerText(), 'https://prueba.trycloudflare.com/enviar?c=ABCD2345');
+    await dpage.evaluate(() => window.__app.autoUI.setConfig({ presetId: 'bn', output: 'download', requireApproval: false, autoTone: false }));
+    await dpage.click('#btnAutoStart'); await dpage.waitForFunction(() => window.__app.autoUI.state.running === true);
+    assert.match(await dpage.locator('.autostate').innerText(), /Recibiendo del teléfono/);
+
+    // el teléfono: llega "por el túnel" (cabecera de reenvío), así que la subida exige el código
+    const phone = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true, extraHTTPHeaders: { 'x-forwarded-for': '203.0.113.50' } });
+    const ppage = await phone.newPage();
+    ppage.on('pageerror', (e) => errors.push('pageerror: ' + e));
+    await ppage.goto(`${base}/enviar`);
+    const photo = Buffer.from(await png(dpage, 1200, 800, '#c05030'), 'base64');
+    // sin código: error claro y la foto no llega
+    await ppage.locator('#gal').setInputFiles({ name: 'sin-codigo.png', mimeType: 'image/png', buffer: photo });
+    await ppage.waitForFunction(() => /código/i.test(document.getElementById('msg').innerText));
+    assert.equal(readdirSync(inbox).filter((f) => /sin-codigo/.test(f)).length, 0);
+    // código equivocado
+    await ppage.fill('#code', 'ZZZZ9999');
+    await ppage.locator('#gal').setInputFiles({ name: 'mal.png', mimeType: 'image/png', buffer: photo });
+    await ppage.waitForFunction(() => /incorrecto/i.test(document.getElementById('list').innerText));
+    // código bueno (con la foto "tomada" con la cámara)
+    await ppage.fill('#code', 'abcd2345');
+    assert.equal(await ppage.inputValue('#code'), 'ABCD-2345', 'se da formato al código');
+    await ppage.locator('#cam').setInputFiles({ name: 'IMG_0100.png', mimeType: 'image/png', buffer: photo });
+    await ppage.waitForFunction(() => /Enviada/.test(document.getElementById('list').innerText), null, { timeout: 30000 });
+    shotsDir && await ppage.screenshot({ path: `${shotsDir}/34-enviar-telefono.png` });
+    // y el código se recuerda en el teléfono
+    await ppage.reload(); assert.equal(await ppage.inputValue('#code'), 'ABCD-2345');
+
+    // la computadora recibe, aplica el preset y deja la hoja lista
+    await dpage.waitForFunction(() => window.__app.autoUI.queue.counts().done >= 1, null, { timeout: 120000 });
+    const q = await dpage.evaluate(() => window.__app.autoUI.queue.items.map((i) => `${i.name}:${i.status}`));
+    assert.deepEqual(q, ['IMG_0100.png:done'], 'solo la foto buena; las rechazadas no llegaron');
+    const sat = await dpage.evaluate(async () => { const s = await import('/src/storage.js'); return (await s.listPhotos())[0].edits.color.saturation; });
+    assert.equal(sat, -100, 'preset blanco y negro aplicado en la computadora');
+    assert.equal(await dpage.locator('[data-act="dl-jpg"]').count(), 1);
+    // ver la foto enviada desde la computadora no es posible para el teléfono (el buzón no se lee desde fuera)
+    const peek = await ppage.evaluate(async () => (await fetch('/api/inbox')).status);
+    assert.equal(peek, 403);
+    await shot(dpage, '35-automatico-buzon');
+    await desk.close(); await phone.close();
+  } finally { srv.server.close(); }
+});
+
 t('teléfono: sin carpetas, "Tomar foto y procesar" pasa por el flujo y deja Descargar JPEG / PDF', async () => {
   // un teléfono: pantalla angosta, táctil y SIN showDirectoryPicker (como Safari o Chrome en Android)
   const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true, acceptDownloads: true });
@@ -186,7 +246,8 @@ t('teléfono: sin carpetas, "Tomar foto y procesar" pasa por el flujo y deja Des
   await page.evaluate(() => window.__app.setMode('auto'));
   assert.equal(await page.evaluate(() => window.__app.autoUI.state.cfg.output), 'download', 'sin carpetas, la salida por defecto es descargar');
   assert.match(await page.locator('#autoBody .warn').innerText(), /Tomar foto y procesar/);
-  assert.equal(await page.locator('#btnAutoWatch').isDisabled(), true, 'no se puede elegir carpeta aquí');
+  assert.equal(await page.locator('input[name="autoSrc"][value="folder"]').isDisabled(), true, 'no se puede elegir carpeta aquí');
+  assert.match(await page.locator('#inboxOff').innerText(), /No disponible/, 'sin servidor local no hay buzón');
   await config(page, { presetId: 'vivido', autoTone: true, requireApproval: false });
   // "toma" la foto con la cámara del teléfono
   await page.locator('#fileAutoCapture').setInputFiles({ name: 'IMG_0001.png', mimeType: 'image/png', buffer: Buffer.from(await png(page, 1200, 900, '#c05030'), 'base64') });

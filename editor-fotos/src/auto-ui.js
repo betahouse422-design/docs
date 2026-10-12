@@ -14,6 +14,7 @@ import * as storage from './storage.js';
 import { FolderWatcher, AutoQueue, STATES, folderAccessSupported, outputName } from './autoflow.js';
 
 const DEFAULT_CFG = {
+  source: 'inbox',           // 'inbox' = buzón de la app (fotos enviadas desde el teléfono) · 'folder' = carpeta de la computadora
   collection: 'starter', presetId: 'natural', intensity: 100,
   autoTone: true, autoWb: false, cropToFrame: true,
   output: 'folder',          // 'folder' = carpeta de impresión · 'download' = descargar/compartir (teléfono) · 'print' = imprimir directo · 'hold' = solo preparar
@@ -27,6 +28,7 @@ function sanitizeCfg(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
   const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
   return {
+    source: pick(r.source, ['inbox', 'folder'], DEFAULT_CFG.source),
     collection: typeof r.collection === 'string' ? r.collection : DEFAULT_CFG.collection,
     presetId: typeof r.presetId === 'string' ? r.presetId : DEFAULT_CFG.presetId,
     intensity: num(r.intensity, 0, 100, 100),
@@ -55,6 +57,19 @@ async function ensurePermission(handle, mode) {
   } catch { return false; }
 }
 
+// Buzón de la app: el servidor local guarda las fotos que el teléfono envía y las lista aquí (solo desde esta computadora).
+async function inboxInfo() {
+  try { const r = await fetch('/api/info', { cache: 'no-store' }); if (!r.ok) return null; const j = await r.json(); return j && j.ok ? j : null; } catch { return null; }
+}
+async function listInbox() {
+  const r = await fetch('/api/inbox', { cache: 'no-store' });
+  if (!r.ok) throw new Error('El buzón no responde');
+  return (await r.json()).map((e) => ({
+    name: e.name, size: e.size, mtime: e.mtime,
+    handle: { getFile: async () => { const f = await fetch(`/api/inbox/file/${encodeURIComponent(e.name)}`, { cache: 'no-store' }); if (!f.ok) throw new Error('No se pudo leer la foto del buzón'); return new File([await f.blob()], e.name, { lastModified: e.mtime }); } },
+  }));
+}
+
 export function createAutoUI(ctx) {
   const { lib, toast, printUI } = ctx;
   const S = {
@@ -67,6 +82,8 @@ export function createAutoUI(ctx) {
   // ------------------------------------------------------------------ configuración guardada
   async function init() {
     S.cfg = sanitizeCfg(await storage.kvGet('autoConfig'));
+    S.inbox = await inboxInfo(); S.tunnel = (await storage.kvGet('autoTunnel')) || '';
+    if (!S.inbox && S.cfg.source === 'inbox' && folderAccessSupported()) S.cfg.source = 'folder'; // sin servidor local, solo queda la carpeta
     if (!folderAccessSupported() && S.cfg.output === 'folder') S.cfg.output = 'download'; // teléfono / navegador sin carpetas
     try { S.watchDir = (await storage.kvGet('autoWatchDir')) || null; S.outDir = (await storage.kvGet('autoOutDir')) || null; } catch { /* sin carpetas guardadas */ }
     S.counter = Number(await storage.kvGet('autoCounter')) || 0;
@@ -105,6 +122,20 @@ export function createAutoUI(ctx) {
     return el('label', { class: 'check' }, c, label);
   };
 
+  // Código y enlace para mandar fotos desde el teléfono
+  function inboxBox() {
+    if (!S.inbox) return el('p', { class: 'hint indent', id: 'inboxOff' }, 'No disponible aquí. Abre la app desde el servidor de la computadora (http://localhost:8080) para recibir fotos del teléfono.');
+    const base = String(S.tunnel || '').trim().replace(/\/+$/, '');
+    const link = base ? `${base}/enviar?c=${S.inbox.code.replace('-', '')}` : '';
+    const tun = el('input', { type: 'text', class: 'field', id: 'autoTunnel', placeholder: 'https://….trycloudflare.com', value: S.tunnel || '', disabled: S.running });
+    tun.addEventListener('change', async () => { S.tunnel = tun.value.trim(); await storage.kvSet('autoTunnel', S.tunnel); build(); });
+    return el('div', { class: 'indent inboxbox' },
+      el('div', { class: 'hint' }, 'Código del teléfono: ', el('strong', { id: 'inboxCode' }, S.inbox.code)),
+      el('label', { class: 'pfield' }, el('span', {}, 'Dirección del túnel (la que sale al abrirlo)'), tun),
+      link ? el('div', { class: 'hint' }, 'Enlace para el teléfono: ', el('span', { id: 'inboxLink', class: 'mono' }, link)) : el('div', { class: 'hint' }, 'Pega arriba la dirección del túnel y aquí aparece el enlace para el teléfono (termina en /enviar).'),
+      link ? el('button', { class: 'btn small', type: 'button', id: 'btnCopyLink', onClick: async () => { try { await navigator.clipboard.writeText(link); toast('Enlace copiado'); } catch { toast('No se pudo copiar; selecciónalo y cópialo', true); } } }, 'Copiar enlace') : null);
+  }
+
   async function build() {
     await loadCollections();
     const sp = printUI.getSpec(); const brand = printUI.state.brand;
@@ -126,10 +157,13 @@ export function createAutoUI(ctx) {
     const outFolder = S.cfg.output === 'folder';
     const parts = [
       !supported ? el('p', { class: 'warn' }, 'Este navegador (o el teléfono) no puede vigilar una carpeta. Aquí usa "Tomar foto y procesar". Para vigilar la carpeta de la cámara, abre la app en Google Chrome o Edge en la computadora.') : null,
-      section('1 · Carpeta donde llegan las fotos',
-        el('div', { class: 'row' }, el('button', { class: 'btn small', type: 'button', id: 'btnAutoWatch', disabled: S.running || !supported, onClick: () => chooseFolder('watch') }, S.watchDir ? 'Cambiar carpeta…' : 'Elegir carpeta…'),
-          el('span', { class: 'hint', id: 'autoWatchName' }, S.watchDir ? S.watchDir.name : 'Sin carpeta')),
-        check('includeExisting', 'Procesar también las fotos que ya estén en la carpeta')),
+      section('1 · De dónde llegan las fotos',
+        radio('autoSrc', 'inbox', 'Buzón de esta app: fotos enviadas desde el teléfono', S.cfg.source === 'inbox', (v) => { S.cfg.source = v; saveCfg(); build(); }, S.running || !S.inbox),
+        S.cfg.source === 'inbox' ? inboxBox() : null,
+        radio('autoSrc', 'folder', 'Una carpeta de la computadora (la de la cámara)', S.cfg.source === 'folder', (v) => { S.cfg.source = v; saveCfg(); build(); }, S.running || !supported),
+        S.cfg.source === 'folder' ? el('div', { class: 'row indent' }, el('button', { class: 'btn small', type: 'button', id: 'btnAutoWatch', disabled: S.running || !supported, onClick: () => chooseFolder('watch') }, S.watchDir ? 'Cambiar carpeta…' : 'Elegir carpeta…'),
+          el('span', { class: 'hint', id: 'autoWatchName' }, S.watchDir ? S.watchDir.name : 'Sin carpeta')) : null,
+        check('includeExisting', 'Procesar también las fotos que ya estén')),
       section('2 · Restaurante, marco y logo',
         brandSel, el('p', { class: 'hint', id: 'autoSummary' }, summary),
         el('button', { class: 'btn small', type: 'button', id: 'btnAutoToPrint', disabled: S.running, onClick: () => ctx.goToPrint() }, 'Ajustar papel, marco y logo en Imprimir')),
@@ -164,7 +198,7 @@ export function createAutoUI(ctx) {
     const c = S.queue.counts();
     const items = [...S.queue.items].reverse().slice(0, 60);
     const header = el('div', { class: 'autohead' },
-      el('div', { class: 'autostate' + (S.running ? ' on' : '') }, S.running ? `● Vigilando ${S.watchDir ? S.watchDir.name : ''}` : '○ Detenido'),
+      el('div', { class: 'autostate' + (S.running ? ' on' : '') }, S.running ? `● ${S.cfg.source === 'inbox' ? 'Recibiendo del teléfono' : 'Vigilando ' + (S.watchDir ? S.watchDir.name : '')}` : '○ Detenido'),
       el('div', { class: 'autocounts', id: 'autoCounts' },
         `${c.done} listas · ${c.waiting + c.importing + c.processing + c.printing} en proceso` + (c.review ? ` · ${c.review} por aprobar` : '') + (c.error ? ` · ${c.error} con error` : '')),
       S.queue.items.some((x) => STATES[x.status].final) ? el('button', { class: 'btn small', type: 'button', onClick: () => S.queue.clearFinished() }, 'Limpiar terminadas') : null);
@@ -198,11 +232,13 @@ export function createAutoUI(ctx) {
   async function start() {
     const preset = currentPreset();
     if (!preset) { toast('Elige un preset', true); return; }
-    if (!S.watchDir) { toast('Primero elige la carpeta donde llegan las fotos de la cámara', true); return; }
+    const fromInbox = S.cfg.source === 'inbox';
+    if (fromInbox && !S.inbox) { toast('El buzón no está disponible. Abre la app desde http://localhost:8080 en la computadora.', true); return; }
+    if (!fromInbox && !S.watchDir) { toast('Primero elige la carpeta donde llegan las fotos de la cámara', true); return; }
     if (S.cfg.output === 'folder' && !S.outDir) { toast('Elige la carpeta donde se guardarán las fotos listas', true); return; }
-    if (!(await ensurePermission(S.watchDir, 'read'))) { toast('Sin permiso para leer la carpeta de la cámara', true); return; }
+    if (!fromInbox && !(await ensurePermission(S.watchDir, 'read'))) { toast('Sin permiso para leer la carpeta de la cámara', true); return; }
     if (S.cfg.output === 'folder' && !(await ensurePermission(S.outDir, 'readwrite'))) { toast('Sin permiso para escribir en la carpeta de salida', true); return; }
-    S.watcher = new FolderWatcher({ list: () => listDirectory(S.watchDir), isPhotoName: ctx.isPhotoName, settleMs: 1500, known: (await storage.kvGet('autoKnown')) || [] });
+    S.watcher = new FolderWatcher({ list: () => (fromInbox ? listInbox() : listDirectory(S.watchDir)), isPhotoName: ctx.isPhotoName, settleMs: 1500, known: (await storage.kvGet('autoKnown')) || [] });
     try { await S.watcher.start({ includeExisting: S.cfg.includeExisting }); } catch (err) { toast('No se pudo leer la carpeta: ' + (err.message || err), true); return; }
     S.running = true; S.startedAt = Date.now(); ctx.setRunning(true);
     build(); toast('Modo automático en marcha');

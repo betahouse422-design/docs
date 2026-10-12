@@ -211,3 +211,6 @@ body.auto-running #modeSwitch button:not([data-mode="auto"]) { opacity: .4; poin
 .autoact { display: flex; flex-direction: column; gap: 6px; }
 .chip.st-done { border-color: #4cd964; color: #4cd964; } .chip.st-error { border-color: #ff6b6b; color: #ff6b6b; } .chip.st-review { border-color: #ffb347; color: #ffb347; }
 .center { text-align: center; padding: 24px 8px; }
+
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; font-size: 12px; }
+.inboxbox { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
