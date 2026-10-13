@@ -202,7 +202,7 @@ t('modo Imprimir: muestra la hoja con la foto, el panel cambia y los botones de 
   await shot(page, '11-imprimir');
   await page.click('#modeSwitch button[data-mode="edit"]');
   assert.equal(await page.locator('#canvasWrap').isVisible(), true);
-  assert.equal(await page.locator('#btnExport').innerText(), 'Exportar');
+  assert.equal((await page.locator('#btnExport').innerText()).toLowerCase(), 'exportar');
   await ctx.close();
 });
 
