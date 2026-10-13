@@ -27,6 +27,7 @@ import { isRawName, decodeRaw, rawToCanvas, canDecodeFull } from './raw.js';
 import { newStroke, MAX_STROKES, MAX_STROKE_POINTS } from './brush.js';
 import { watermarkBlob, loadImageAsset } from './compose.js';
 import { LOGO_POSITIONS } from './layout.js';
+import { initTheme } from './theme.js';
 
 // ---------- estado global ----------
 const view = $('#view');
@@ -1456,6 +1457,8 @@ function wire() {
     if (files.length) await importPresetFiles(files);
   });
 
+  initTheme($('#btnTheme'));
+  window.addEventListener('themechange', () => { updateHistogram(); curveEditor?.draw?.(); overlay.draw(); });
   $('#btnUndo').addEventListener('click', () => store.undo());
   $('#btnRedo').addEventListener('click', () => store.redo());
   $('#btnReset').addEventListener('click', () => { if (confirm('¿Restablecer todos los ajustes de esta foto? Podrás deshacerlo.')) store.reset(); });

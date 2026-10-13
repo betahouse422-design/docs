@@ -4,7 +4,7 @@
 import { hitHandle, resizeRect, moveRect } from './geometry.js';
 import { paintStrokes } from './brush.js';
 
-const ACCENT = '#ffb347';
+const ACCENT = '#4d97ff';
 
 export class Overlay {
   // hooks: getMode() -> 'none'|'crop'|'mask'|'pick'|'spot'

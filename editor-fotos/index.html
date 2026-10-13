@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <meta name="theme-color" content="#101114">
+  <meta name="theme-color" content="#f2f1ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121316" media="(prefers-color-scheme: dark)">
+  <script>try{var t=localStorage.getItem("tema");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -18,6 +20,7 @@
 <body data-mode="edit">
   <div id="app">
     <header class="bar">
+      <span class="brand">Editor <em>fotos</em></span>
       <button id="btnOpen" class="btn primary"><span class="lg">Abrir fotos</span><span class="sm">Abrir</span></button>
       <div class="group">
         <button id="btnUndo" class="btn icon" title="Deshacer (Ctrl+Z)" aria-label="Deshacer" disabled>↶</button>
@@ -26,6 +29,7 @@
       <button id="btnCompare" class="btn" title="Mantén pulsado para ver el original (tecla \)" disabled><span class="lg">Antes / después</span><span class="sm">Antes</span></button>
       <button id="btnReset" class="btn" title="Restablecer todos los ajustes" aria-label="Restablecer" disabled><span class="lg">Restablecer</span><span class="sm">↺</span></button>
       <span class="spacer"></span>
+      <button id="btnTheme" class="btn icon" title="Cambiar tema claro / oscuro" aria-label="Cambiar tema">◐</button>
       <button id="btnExport" class="btn primary" disabled>Exportar</button>
     </header>
 
@@ -33,7 +37,7 @@
       <section id="stage" aria-label="Vista de la foto">
         <div id="viewport">
           <div id="empty">
-            <h1>Editor de fotos</h1>
+            <h1>Editor de <em>fotos</em></h1>
             <p>Abre una o varias fotos, o arrástralas aquí.<br>Todo se procesa en tu dispositivo; nada se sube a ningún servidor.</p>
             <div class="row">
               <button id="btnOpen2" class="btn primary big">Abrir fotos</button>

@@ -24,7 +24,7 @@ const TYPES = {
 };
 
 // En modo normal solo estos caminos son públicos.
-const PUBLIC_PATHS = /^\/(index\.html|enviar|styles\.css|manifest\.webmanifest|sw\.js|icons\/|src\/|vendor\/|presets\/)/;
+const PUBLIC_PATHS = /^\/(index\.html|enviar|styles\.css|manifest\.webmanifest|sw\.js|icons\/|fonts\/|src\/|vendor\/|presets\/)/;
 
 // Extensiones que el buzón acepta (fotos y RAW). Todo lo demás se rechaza.
 export const PHOTO_EXT = /\.(jpe?g|png|webp|heic|heif|avif|gif|bmp|arw|sr2|srf|cr2|cr3|crw|nef|nrw|dng|raf|orf|rw2|rwl|pef|srw|3fr|fff|erf|kdc|dcr|mrw|iiq|mef|mos|x3f)$/i;

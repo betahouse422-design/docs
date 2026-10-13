@@ -197,7 +197,7 @@ t('modo Imprimir: muestra la hoja con la foto, el panel cambia y los botones de 
   assert.equal(await page.locator('#printBody').isVisible(), true);
   assert.equal(await page.locator('#tabs').isVisible(), false);
   assert.equal(await page.locator('#btnUndo').isVisible(), false);
-  assert.equal(await page.locator('#btnExport').innerText(), 'Descargar PDF');
+  assert.equal((await page.locator('#btnExport').innerText()).toLowerCase(), 'descargar pdf');
   assert.match(await page.locator('#printInfo').innerText(), /10 × 15 cm|102 × 152|152 × 102/);
   await shot(page, '11-imprimir');
   await page.click('#modeSwitch button[data-mode="edit"]');

@@ -60,7 +60,7 @@ t('de la carpeta de la cámara a la carpeta de salida: preset, marco, JPEG y PDF
   await page.click('#btnAutoStart');
   await page.waitForFunction(() => window.__app.autoUI.state.running === true);
   assert.equal(await page.evaluate(() => document.body.classList.contains('auto-running')), true);
-  assert.equal(await page.locator('#btnAutoStart').innerText(), 'Detener');
+  assert.equal((await page.locator('#btnAutoStart').innerText()).toLowerCase(), 'detener');
   // llegan dos fotos: un PNG y un RAW (DNG), como si la cámara las copiara
   await page.evaluate(async ([a, b]) => { await window.__drop('DSC001.png', a); await window.__drop('DSC002.dng', b); }, [await png(page, 1200, 800, '#c05030'), makeDng({ width: 192, height: 128, color: patchesColor(192, 128) }).toString('base64')]);
   await waitDone(page, 2);

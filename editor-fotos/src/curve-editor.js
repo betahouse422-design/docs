@@ -5,6 +5,7 @@
 
 import { makeCurve, addPoint, movePoint, removePoint, nearestPoint } from './curves.js';
 
+import { themeVar } from './theme.js';
 const COLORS = { master: '#e8e8ee', r: '#ff5a5a', g: '#4cd964', b: '#5a8bff', hue: '#e8e8ee', sat: '#e8e8ee', lum: '#e8e8ee' };
 // Curvas por tono: el eje x es el tono, el centro (0.5) significa "sin cambio" y los extremos son el mismo color.
 const HUE_CHANNELS = ['hue', 'sat', 'lum'];
@@ -99,8 +100,9 @@ export class CurveEditor {
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     const ctx = c.getContext('2d');
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#16171b'; ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
+    const bg = themeVar('--sunken') || '#16171b'; const ink = themeVar('--text') || '#e8e8ee'; const lineC = themeVar('--line') || 'rgba(255,255,255,.1)';
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = lineC; ctx.lineWidth = 1;
     for (let i = 1; i < 4; i++) {
       ctx.beginPath(); ctx.moveTo((i / 4) * w, 0); ctx.lineTo((i / 4) * w, h); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, (i / 4) * h); ctx.lineTo(w, (i / 4) * h); ctx.stroke();
@@ -110,13 +112,13 @@ export class CurveEditor {
       const g = ctx.createLinearGradient(0, 0, w, 0);
       for (let i = 0; i <= 12; i++) g.addColorStop(i / 12, `hsl(${i * 30} 70% 50%)`);
       ctx.globalAlpha = 0.25; ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1;
-      ctx.strokeStyle = 'rgba(255,255,255,.3)';
+      ctx.strokeStyle = themeVar('--line-strong') || 'rgba(255,255,255,.3)';
       ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
     } else {
-      ctx.strokeStyle = 'rgba(255,255,255,.18)';
+      ctx.strokeStyle = themeVar('--line-strong') || 'rgba(255,255,255,.18)';
       ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke();
     }
-    const color = COLORS[this.channel];
+    const color = ['master', 'hue', 'sat', 'lum'].includes(this.channel) ? ink : COLORS[this.channel];
     const f = makeCurve(this.points);
     ctx.strokeStyle = color; ctx.lineWidth = 2 * dpr;
     ctx.beginPath();
@@ -129,7 +131,7 @@ export class CurveEditor {
     this.points.forEach((p, i) => {
       ctx.beginPath();
       ctx.arc(p[0] * w, (1 - p[1]) * h, (i === this.active ? 7 : 5) * dpr, 0, Math.PI * 2);
-      ctx.fillStyle = i === this.active ? color : '#16171b';
+      ctx.fillStyle = i === this.active ? color : bg;
       ctx.fill(); ctx.lineWidth = 2 * dpr; ctx.strokeStyle = color; ctx.stroke();
     });
   }

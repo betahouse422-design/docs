@@ -25,6 +25,8 @@ export function clipping(hist) {
   return total ? { shadows: lo / total, highlights: hi / total } : { shadows: 0, highlights: 0 };
 }
 
+import { isDark } from './theme.js';
+
 export function drawHistogram(canvas, hist) {
   const ctx = canvas.getContext('2d');
   const w = canvas.width; const h = canvas.height;
@@ -39,9 +41,9 @@ export function drawHistogram(canvas, hist) {
     for (let i = 0; i < 256; i++) ctx.lineTo((i / 255) * w, h - Math.min(1, f(arr[i]) / max) * (h - 2));
     ctx.lineTo(w, h); ctx.closePath(); ctx.fillStyle = color; ctx.fill();
   };
-  ctx.globalCompositeOperation = 'lighter';
-  plot(hist.r, 'rgba(230,60,60,.55)');
-  plot(hist.g, 'rgba(60,200,90,.55)');
-  plot(hist.b, 'rgba(70,110,255,.6)');
+  ctx.globalCompositeOperation = isDark() ? 'lighter' : 'multiply';
+  plot(hist.r, isDark() ? 'rgba(230,60,60,.55)' : 'rgba(255,90,90,.7)');
+  plot(hist.g, isDark() ? 'rgba(60,200,90,.55)' : 'rgba(80,200,110,.7)');
+  plot(hist.b, isDark() ? 'rgba(70,110,255,.6)' : 'rgba(80,130,255,.7)');
   ctx.globalCompositeOperation = 'source-over';
 }
